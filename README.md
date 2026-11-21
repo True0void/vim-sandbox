@@ -29,10 +29,10 @@ A minimalist Vim-like editor with artistic animated backgrounds. Written in Rust
 
 ```bash
 # Requires Rust 1.70+
-git clone https://github.com/<your-username>/vim-sandbox
+https://github.com/True0void/vim-sandbox
 cd vim-sandbox
 cargo build --release
-./target/release/vim-sandbox [file]
+./target/release/vim-sandbox 
 ```
 
 ## Usage
