@@ -66,23 +66,23 @@ fn render_editor_area(f: &mut Frame, editor: &Editor, area: Rect) {
             let at = line_content.chars().nth(cursor.col).unwrap_or(' ');
             let after = &line_content[cursor.col.min(line_content.len())..];
 
-            spans.push(Span::raw(before));
+            spans.push(Span::styled(before, Style::default().fg(Color::White)));
             spans.push(Span::styled(
                 at.to_string(),
                 Style::default().bg(Color::White).fg(Color::Black).add_modifier(Modifier::BOLD),
             ));
-            spans.push(Span::raw(after));
+            spans.push(Span::styled(after, Style::default().fg(Color::White)));
         } else if row == cursor.row && mode == Mode::Insert {
             let before = &line_content[..cursor.col.min(line_content.len())];
             let after = &line_content[cursor.col.min(line_content.len())..];
-            spans.push(Span::raw(before));
+            spans.push(Span::styled(before, Style::default().fg(Color::White)));
             spans.push(Span::styled(
                 " ",
                 Style::default().bg(Color::Green).fg(Color::Black),
             ));
-            spans.push(Span::raw(after));
+            spans.push(Span::styled(after, Style::default().fg(Color::White)));
         } else {
-            spans.push(Span::raw(line_content));
+            spans.push(Span::styled(line_content, Style::default().fg(Color::White)));
         }
 
         lines.push(Line::from(spans));
@@ -95,7 +95,7 @@ fn render_editor_area(f: &mut Frame, editor: &Editor, area: Rect) {
 
     let text = Text::from(lines);
     let paragraph = Paragraph::new(text)
-        .style(Style::default().fg(Color::White))
+        .style(Style::default())
         .alignment(Alignment::Left);
 
     f.render_widget(paragraph, area);

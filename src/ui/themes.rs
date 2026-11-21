@@ -1,13 +1,14 @@
-use rand::{Rng, SeedableRng, seq::SliceRandom};
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::Color,
-};
-use rand_chacha::ChaCha8Rng;
-use std::cell::RefCell;
+//! Spider Lily (彼岸花) — a slow, minimal night garden drawn in braille.
+//!
+//! Everything here is background art only: stems planted in the soil, long
+//! recurved petals, gold stamens and a few petals drifting down. The editor
+//! itself is untouched.
 
-/// Trait for all animated background themes
+use rand::Rng;
+use rand_chacha::ChaCha8Rng;
+use ratatui::{buffer::Buffer, layout::Rect, style::Color};
+
+/// Trait for an animated background theme.
 pub trait Theme: Send + Sync {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
@@ -16,1713 +17,1094 @@ pub trait Theme: Send + Sync {
     fn resize(&mut self, area: Rect);
 }
 
-/// Theme registry - all available themes
+/// Single-theme registry: only the spider lily exists.
 pub struct ThemeRegistry {
-    themes: Vec<Box<dyn Theme>>,
-    current: usize,
+    theme: Box<dyn Theme>,
 }
 
 impl ThemeRegistry {
     pub fn new() -> Self {
-        let mut registry = Self {
-            themes: Vec::new(),
-            current: 0,
-        };
-        registry.register_all();
-        registry
-    }
-
-    fn register_all(&mut self) {
-        self.themes.push(Box::new(SpiderLily::new()));
-        self.themes.push(Box::new(SakuraNight::new()));
-        self.themes.push(Box::new(AbyssalBloom::new()));
-        self.themes.push(Box::new(FireflyDusk::new()));
-        self.themes.push(Box::new(AuroraVoid::new()));
-        self.themes.push(Box::new(KoiDreams::new()));
-        self.themes.push(Box::new(BambooWhisper::new()));
-        self.themes.push(Box::new(NebulaHeart::new()));
-        self.themes.push(Box::new(RainGlass::new()));
-        self.themes.push(Box::new(WillowTears::new()));
+        Self {
+            theme: Box::new(SpiderLily::new()),
+        }
     }
 
     pub fn current(&self) -> &dyn Theme {
-        self.themes[self.current].as_ref()
+        self.theme.as_ref()
     }
 
     pub fn current_mut(&mut self) -> &mut dyn Theme {
-        self.themes[self.current].as_mut()
-    }
-
-    pub fn set_theme(&mut self, name: &str) -> bool {
-        for (i, theme) in self.themes.iter().enumerate() {
-            if theme.name().eq_ignore_ascii_case(name) {
-                self.current = i;
-                return true;
-            }
-        }
-        false
-    }
-
-    pub fn next_theme(&mut self) {
-        self.current = (self.current + 1) % self.themes.len();
-    }
-
-    pub fn prev_theme(&mut self) {
-        self.current = if self.current == 0 { self.themes.len() - 1 } else { self.current - 1 };
-    }
-
-    pub fn list_themes(&self) -> Vec<(&'static str, &'static str)> {
-        self.themes.iter().map(|t| (t.name(), t.description())).collect()
+        self.theme.as_mut()
     }
 
     pub fn current_name(&self) -> &'static str {
-        self.themes[self.current].name()
+        self.theme.name()
     }
 
     pub fn resize_all(&mut self, area: Rect) {
-        for theme in &mut self.themes {
-            theme.resize(area);
-        }
+        self.theme.resize(area);
     }
 }
 
 // ============================================================================
-// HIGH-QUALITY ASCII ART HELPERS
+// Braille canvas
+// ============================================================================
+// One terminal cell is 2 braille dots wide and 4 dots tall.  Drawing directly
+// in dot space keeps circles physically round and lets many strokes share the
+// same cell.
+
+const BRAILLE_BASE: u32 = 0x2800;
+
+const BRAILLE_BITS: [[u8; 4]; 2] = [
+    [0x01, 0x08, 0x10, 0x40], // left column: dots 1, 3, 5, 7
+    [0x02, 0x04, 0x20, 0x80], // right column: dots 2, 4, 6, 8
+];
+
+#[inline]
+fn plot_dot(buf: &mut Buffer, area: Rect, dx: i32, dy: i32, color: (u8, u8, u8)) {
+    plot_dot_impl(buf, area, dx, dy, color, false);
+}
+
+/// Like [`plot_dot`], but always replaces the colour of the cell, even with a
+/// darker one. Used for the flower heart, which must stay dark.
+#[inline]
+fn plot_dot_force(buf: &mut Buffer, area: Rect, dx: i32, dy: i32, color: (u8, u8, u8)) {
+    plot_dot_impl(buf, area, dx, dy, color, true);
+}
+
+fn plot_dot_impl(
+    buf: &mut Buffer,
+    area: Rect,
+    dx: i32,
+    dy: i32,
+    color: (u8, u8, u8),
+    force: bool,
+) {
+    if dx < 0 || dy < 0 {
+        return;
+    }
+    let cx = dx >> 1;
+    let cy = dy >> 2;
+    if cx >= area.width as i32 || cy >= area.height as i32 {
+        return;
+    }
+
+    let bit = BRAILLE_BITS[(dx & 1) as usize][(dy & 3) as usize];
+    let cell = &mut buf[(cx as u16, cy as u16)];
+
+    // Keep the brightest stroke when two strokes share a cell: a dark petal
+    // base must never punch a hole through a glowing tip.
+    if !force {
+        if let Color::Rgb(r, g, b) = cell.fg {
+            let old = r as u16 + g as u16 + b as u16;
+            let new = color.0 as u16 + color.1 as u16 + color.2 as u16;
+            if old > new {
+                return;
+            }
+        }
+    }
+
+    let mut pattern = cell
+        .symbol()
+        .chars()
+        .next()
+        .and_then(|ch| {
+            let value = ch as u32;
+            if (BRAILLE_BASE..=BRAILLE_BASE + 0xFF).contains(&value) {
+                Some((value - BRAILLE_BASE) as u8)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+
+    pattern |= bit;
+    cell.set_char(char::from_u32(BRAILLE_BASE + pattern as u32).unwrap_or(' '));
+    cell.set_fg(Color::Rgb(color.0, color.1, color.2));
+}
+
+/// Paint a round dot of `radius` dots at dot-space position (dx, dy).
+#[inline]
+fn stamp_disc(
+    buf: &mut Buffer,
+    area: Rect,
+    dx: f32,
+    dy: f32,
+    radius: f32,
+    color: (u8, u8, u8),
+) {
+    stamp_disc_impl(buf, area, dx, dy, radius, color, false);
+}
+
+/// A disc that is allowed to darken the dots it covers.
+#[inline]
+fn stamp_disc_force(
+    buf: &mut Buffer,
+    area: Rect,
+    dx: f32,
+    dy: f32,
+    radius: f32,
+    color: (u8, u8, u8),
+) {
+    stamp_disc_impl(buf, area, dx, dy, radius, color, true);
+}
+
+fn stamp_disc_impl(
+    buf: &mut Buffer,
+    area: Rect,
+    dx: f32,
+    dy: f32,
+    radius: f32,
+    color: (u8, u8, u8),
+    force: bool,
+) {
+    let r = radius.max(0.5);
+    let ri = r.ceil() as i32;
+    let cx = dx.round() as i32;
+    let cy = dy.round() as i32;
+    let r2 = r * r;
+
+    for oy in -ri..=ri {
+        for ox in -ri..=ri {
+            if (ox * ox + oy * oy) as f32 <= r2 {
+                if force {
+                    plot_dot_force(buf, area, cx + ox, cy + oy, color);
+                } else {
+                    plot_dot(buf, area, cx + ox, cy + oy, color);
+                }
+            }
+        }
+    }
+}
+
+/// Draw a tapered line in dot space.
+#[allow(clippy::too_many_arguments)]
+fn draw_dot_line(
+    buf: &mut Buffer,
+    area: Rect,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    r0: f32,
+    r1: f32,
+    c0: (u8, u8, u8),
+    c1: (u8, u8, u8),
+) {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let distance = (dx * dx + dy * dy).sqrt();
+    let steps = distance.ceil().max(1.0) as usize;
+
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let radius = r0 + (r1 - r0) * t;
+        let color = lerp_color(c0, c1, t);
+        stamp_disc(buf, area, x0 + dx * t, y0 + dy * t, radius, color);
+    }
+}
+
+// ============================================================================
+// Small math / color helpers
 // ============================================================================
 
-thread_local! {
-    static DRAW_RNG: RefCell<ChaCha8Rng> = RefCell::new(ChaCha8Rng::from_rng(&mut rand::thread_rng()).unwrap());
+const TAU: f32 = std::f32::consts::TAU;
+
+#[inline]
+fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
-fn draw_rng() -> impl FnMut() -> f32 {
-    || DRAW_RNG.with(|r| r.borrow_mut().gen::<f32>())
-}
-
-fn new_rng() -> ChaCha8Rng {
-    ChaCha8Rng::from_rng(&mut rand::thread_rng()).unwrap()
-}
-
-// Color interpolation helper
-fn lerp_color(c1: (u8, u8, u8), c2: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+#[inline]
+fn lerp_color(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+    let t = t.clamp(0.0, 1.0);
     (
-        (c1.0 as f32 + (c2.0 as f32 - c1.0 as f32) * t) as u8,
-        (c1.1 as f32 + (c2.1 as f32 - c1.1 as f32) * t) as u8,
-        (c1.2 as f32 + (c2.2 as f32 - c1.2 as f32) * t) as u8,
+        (a.0 as f32 + (b.0 as f32 - a.0 as f32) * t) as u8,
+        (a.1 as f32 + (b.1 as f32 - a.1 as f32) * t) as u8,
+        (a.2 as f32 + (b.2 as f32 - a.2 as f32) * t) as u8,
     )
 }
 
-// Draw a character with color at position
-fn draw_char(buf: &mut Buffer, x: i32, y: i32, area: Rect, ch: char, color: (u8, u8, u8)) {
-    if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-        buf[(x as u16, y as u16)].set_char(ch);
-        buf[(x as u16, y as u16)].set_fg(Color::Rgb(color.0, color.1, color.2));
-    }
+#[inline]
+fn mul_color(c: (u8, u8, u8), factor: f32) -> (u8, u8, u8) {
+    (
+        (c.0 as f32 * factor).clamp(0.0, 255.0) as u8,
+        (c.1 as f32 * factor).clamp(0.0, 255.0) as u8,
+        (c.2 as f32 * factor).clamp(0.0, 255.0) as u8,
+    )
+}
+
+#[inline]
+fn tint(c: (u8, u8, u8), red: f32, green_blue: f32) -> (u8, u8, u8) {
+    (
+        (c.0 as f32 * red).clamp(0.0, 255.0) as u8,
+        (c.1 as f32 * green_blue).clamp(0.0, 255.0) as u8,
+        (c.2 as f32 * green_blue).clamp(0.0, 255.0) as u8,
+    )
+}
+
+#[inline]
+fn hash(mut x: u32) -> u32 {
+    x = x.wrapping_mul(0x9E37_79B9);
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x85EB_CA6B);
+    x ^= x >> 13;
+    x
 }
 
 // ============================================================================
-// THEME 1: SPIDER LILY (彼岸花) - Tokyo Ghoul style
+// Palette — restrained: deep blood red, a little gold, almost-black green
 // ============================================================================
 
-struct SpiderFlower {
-    x: f32, y: f32,
-    stage: f32,           // 0.0=bud, 1.0=full bloom, >1=wilting
-    stage_speed: f32,
-    rotation: f32,
-    size: f32,
-    color_phase: f32,
-    petal_fall_timer: f32,
+const C_PETAL_DEEP: (u8, u8, u8) = (0x5E, 0x04, 0x0A);
+const C_PETAL_MID: (u8, u8, u8) = (0xC0, 0x10, 0x1C);
+const C_PETAL_TIP: (u8, u8, u8) = (0xFF, 0x36, 0x3A);
+const C_PETAL_HOT: (u8, u8, u8) = (0xFF, 0x8A, 0x70);
+const C_STAMEN: (u8, u8, u8) = (0x8A, 0x5C, 0x24);
+const C_ANTHER: (u8, u8, u8) = (0xFF, 0xDC, 0x84);
+const C_STEM_DARK: (u8, u8, u8) = (0x12, 0x2A, 0x16);
+const C_STEM_LIGHT: (u8, u8, u8) = (0x30, 0x58, 0x32);
+const C_MOSS: (u8, u8, u8) = (0x0E, 0x1E, 0x10);
+const C_MOSS_LIGHT: (u8, u8, u8) = (0x1C, 0x30, 0x1C);
+const C_GLOW: (u8, u8, u8) = (0x46, 0x04, 0x0A);
+const C_FALLING: (u8, u8, u8) = (0x94, 0x0C, 0x12);
+
+// ============================================================================
+// Spider lily
+// ============================================================================
+
+#[derive(Copy, Clone)]
+struct Petal {
+    angle: f32,
+    length: f32,  // cells
+    width: f32,   // dots (radius)
+    curl: f32,    // radians the petal bends along its length
+    recurve: f32, // how much the tip lifts back up
+    phase: f32,
 }
 
+#[derive(Copy, Clone)]
+struct Stamen {
+    angle: f32,
+    length: f32,
+    curl: f32,
+    recurve: f32,
+    phase: f32,
+    speed: f32,
+}
+
+struct Flower {
+    base_x: f32,
+    stem_height: f32,
+    lean: f32,
+    curve_amp: f32,
+    curve_freq: f32,
+    curve_phase: f32,
+    sway_phase: f32,
+    sway_speed: f32,
+    sway_amp: f32,
+    head_rotation: f32,
+    growth: f32,
+    grow_time: f32,
+    age: f32,
+    bloom_time: f32,
+    hold_time: f32,
+    wilt_time: f32,
+    bloom: f32,
+    dead: bool,
+    petals: [Petal; 6],
+    stamens: [Stamen; 5],
+    hue: f32,
+    depth: f32,
+    fall_accum: f32,
+}
+
+#[derive(Copy, Clone)]
 struct FallingPetal {
-    x: f32, y: f32,
-    vx: f32, vy: f32,
-    rotation: f32, rot_speed: f32,
-    frame: usize,
-    color: (u8, u8, u8),
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+    angle: f32,
+    spin: f32,
+    phase: f32,
     life: f32,
+    max_life: f32,
+    size: f32,
+    depth: f32,
 }
 
-// Spider lily petal frames (6 petals radiating)
-const SPIDER_PETAL_FRAMES: &[&[&str]] = &[
-    // Bud stage
-    &["  ▄  ", " ▄█▄ ", "▄███▄", " ▀▀▀ "],
-    // Opening
-    &["  ▄  ", " ▄█▄ ", "▄███▄", "█ █ █", " ▀▀▀ "],
-    // Half bloom
-    &["  ▄  ", "╱█╲", "╱███╲", "█ █ █", "╲ █ ╱", " ╲ ╱ "],
-    // Full bloom - 6 petals curved
-    &["   ▄   ", "  ╱█╲  ", " ╱███╲ ", "╱█████╲", "█ ▄ ▄ █", "╲ ▀ ▀ ╱", " ╲   ╱ ", "  ╲ ╱  "],
-    // Wilting - petals drooping
-    &["   ▄   ", "  ╱█╲  ", " ╱███╲ ", "███████", "█ ▄ ▄ █", "╲ ▀ ▀ ╱", "  ╲ ╱  ", "   ╱╲   ", "  ╱  ╲  "],
-];
-
-const SPIDER_PETAL_CHARS: &[char] = &['❀', '✿', '❁', '♢', '◆', '◈', '◇', '◆'];
+#[derive(Copy, Clone)]
+struct HeadView {
+    hx: f32,
+    hy: f32,
+    rot: f32,
+    bloom: f32,
+    depth: f32,
+    red: f32,
+    gb: f32,
+    breath: f32,
+}
 
 struct SpiderLily {
-    flowers: Vec<SpiderFlower>,
-    petals: Vec<FallingPetal>,
+    flowers: Vec<Flower>,
+    falling: Vec<FallingPetal>,
     time: f32,
     width: u16,
     height: u16,
+    target: usize,
+    next_roll: f32,
 }
 
 impl SpiderLily {
     fn new() -> Self {
-        Self { flowers: Vec::new(), petals: Vec::new(), time: 0.0, width: 0, height: 0 }
+        Self {
+            flowers: Vec::new(),
+            falling: Vec::new(),
+            time: 0.0,
+            width: 80,
+            height: 24,
+            target: 0,
+            next_roll: 0.0,
+        }
     }
 
-    fn spawn_flowers(&mut self, width: u16, height: u16, rng: &mut ChaCha8Rng) {
-        self.flowers.clear();
-        let count = ((width * height) as f32 / 3500.0).clamp(3.0, 10.0) as usize;
-        for _ in 0..count {
-            self.flowers.push(SpiderFlower {
-                x: rng.gen_range(4.0..(width - 4) as f32),
-                y: rng.gen_range(6.0..(height - 6) as f32),
-                stage: rng.gen_range(0.0..1.0),
-                stage_speed: rng.gen_range(0.005..0.015),
-                rotation: rng.gen_range(0.0..std::f32::consts::TAU),
-                size: rng.gen_range(0.7..1.3),
-                color_phase: rng.gen_range(0.0..std::f32::consts::TAU),
-                petal_fall_timer: 0.0,
-            });
+    fn ground_y(&self) -> f32 {
+        (self.height as f32 - 3.0).max(4.0)
+    }
+
+    fn pick_x(&self, rng: &mut ChaCha8Rng) -> f32 {
+        // Keep enough room for the widest head: petals, lean and sway all
+        // reach past the stem, so a narrow margin would clip them at the edges.
+        let margin = (self.width as f32 * 0.15).clamp(10.0, 20.0);
+        let lo = margin;
+        let hi = (self.width as f32 - margin).max(lo + 2.0);
+
+        let mut best = rng.gen_range(lo..hi);
+        let mut best_distance = -1.0_f32;
+
+        for _ in 0..10 {
+            let x = rng.gen_range(lo..hi);
+            let distance = self
+                .flowers
+                .iter()
+                .map(|f| (f.base_x - x).abs())
+                .fold(f32::INFINITY, f32::min);
+
+            if distance > best_distance {
+                best_distance = distance;
+                best = x;
+            }
+            if distance > 18.0 {
+                break;
+            }
+        }
+        best
+    }
+
+    fn spawn_flower(&self, x: f32, rng: &mut ChaCha8Rng) -> Flower {
+        let ground_y = self.ground_y();
+        let min_height = (ground_y * 0.38).max(5.0);
+        let max_height = (ground_y * 0.60).max(min_height + 2.0);
+        let stem_height = rng.gen_range(min_height..max_height);
+        let head_y = (ground_y - stem_height).max(3.0);
+
+        // Shorter plants feel closer and are drawn a touch brighter.
+        let depth = (0.62 + 0.38 * (1.0 - stem_height / ground_y)).clamp(0.60, 1.0);
+
+        // Keep the flower in proportion with the window, and leave the top of
+        // the screen free so petals are never chopped off.
+        let max_len = (head_y * 0.95)
+            .min(self.width as f32 * 0.10)
+            .clamp(4.0, 13.0);
+
+        // On narrow terminals a petal should stay a fine line, not a bar.
+        let width_scale = (self.width as f32 / 100.0).clamp(0.72, 1.10);
+        let curl_sign = if rng.gen::<bool>() { 1.0 } else { -1.0 };
+        let hero: usize = rng.gen_range(0..6);
+
+        let mut petals = [Petal {
+            angle: 0.0,
+            length: 0.0,
+            width: 0.0,
+            curl: 0.0,
+            recurve: 0.0,
+            phase: 0.0,
+        }; 6];
+
+        for (i, petal) in petals.iter_mut().enumerate() {
+            let base = i as f32 * TAU / 6.0 + rng.gen_range(-0.12..0.12);
+            let len = if i == hero {
+                max_len * rng.gen_range(1.00..1.08)
+            } else {
+                max_len * rng.gen_range(0.70..1.00)
+            };
+
+            *petal = Petal {
+                angle: base,
+                length: len,
+                width: rng.gen_range(0.90..1.30) * width_scale,
+                curl: curl_sign * rng.gen_range(0.80..1.40),
+                recurve: rng.gen_range(0.60..1.20),
+                phase: rng.gen_range(0.0..TAU),
+            };
+        }
+
+        let stamen_max = (head_y * 1.30).max(max_len * 1.1);
+        let mut stamens = [Stamen {
+            angle: 0.0,
+            length: 0.0,
+            curl: 0.0,
+            recurve: 0.0,
+            phase: 0.0,
+            speed: 0.0,
+        }; 5];
+
+        for (i, stamen) in stamens.iter_mut().enumerate() {
+            *stamen = Stamen {
+                // A crown of filaments fanning upward, like the real flower.
+                angle: -std::f32::consts::FRAC_PI_2
+                    + (i as f32 - 2.0) * 0.62
+                    + rng.gen_range(-0.15..0.15),
+                length: (max_len * rng.gen_range(0.70..1.00)).min(stamen_max),
+                curl: rng.gen_range(-0.22..0.22),
+                recurve: rng.gen_range(0.55..1.10),
+                phase: rng.gen_range(0.0..TAU),
+                speed: rng.gen_range(0.12..0.40),
+            };
+        }
+
+        let grow_time: f32 = rng.gen_range(10.0..18.0);
+        let bloom_time: f32 = rng.gen_range(35.0..70.0);
+        let hold_time: f32 = rng.gen_range(100.0..240.0);
+        let wilt_time: f32 = rng.gen_range(40.0..75.0);
+
+        // Start mid-life so the garden is already alive on the first frame.
+        let age: f32 = rng.gen_range(grow_time..(grow_time + bloom_time + hold_time * 0.70));
+        let growth = smoothstep((age / grow_time).clamp(0.0, 1.0));
+
+        Flower {
+            base_x: x,
+            stem_height,
+            lean: rng.gen_range(-3.5..3.5),
+            curve_amp: rng.gen_range(0.80..2.20),
+            curve_freq: rng.gen_range(1.2..2.2),
+            curve_phase: rng.gen_range(0.0..TAU),
+            sway_phase: rng.gen_range(0.0..TAU),
+            sway_speed: rng.gen_range(0.055..0.135),
+            sway_amp: rng.gen_range(1.2..3.2),
+            head_rotation: rng.gen_range(-0.45..0.45),
+            growth,
+            grow_time,
+            age,
+            bloom_time,
+            hold_time,
+            wilt_time,
+            bloom: 0.0,
+            dead: false,
+            petals,
+            stamens,
+            hue: rng.gen_range(-1.0..1.0),
+            depth,
+            fall_accum: rng.gen_range(0.0..1.0),
+        }
+    }
+
+    fn ensure_flowers(&mut self, rng: &mut ChaCha8Rng) {
+        // Re-roll the desired density only now and then, so the garden keeps a
+        // stable mood instead of flickering between plant counts.
+        if self.target == 0 || self.time >= self.next_roll {
+            let base = ((self.width as f32 / 42.0).round() as usize).clamp(2, 5);
+            let roll = rng.gen::<f32>();
+            let bonus = if roll < 0.02 {
+                3
+            } else if roll < 0.10 {
+                2
+            } else if roll < 0.30 {
+                1
+            } else {
+                0
+            };
+            self.target = (base + bonus).min(6);
+            self.next_roll = self.time + rng.gen_range(55.0..120.0);
+        }
+
+        let mut guard = 0;
+        while self.flowers.len() < self.target && guard < 8 {
+            guard += 1;
+            let x = self.pick_x(rng);
+            let flower = self.spawn_flower(x, rng);
+            self.flowers.push(flower);
         }
     }
 }
+
+// ============================================================================
+// Geometry
+// ============================================================================
+
+/// Position along a stem, `s` from 0 (soil) to 1 (flower head).
+fn stem_point(flower: &Flower, time: f32, ground_y: f32, s: f32) -> (f32, f32) {
+    let height = flower.stem_height * flower.growth;
+
+    let sway1 = (time * flower.sway_speed + flower.sway_phase).sin();
+    let sway2 = (time * flower.sway_speed * 0.47 + flower.sway_phase * 1.7 + 1.9).sin();
+    let bend = (flower.lean + sway1 * flower.sway_amp + sway2 * flower.sway_amp * 0.35)
+        * s.powf(1.7);
+
+    // A gentle S-bend in the middle of the stem, zero at both ends.
+    let wiggle = (s * std::f32::consts::PI * flower.curve_freq + flower.curve_phase).sin()
+        * flower.curve_amp
+        * s
+        * (1.0 - s)
+        * 4.0;
+
+    let x = flower.base_x + bend + wiggle;
+    let y = ground_y - height * s;
+    (x, y)
+}
+
+/// Point on a petal spine at `t` in 0..=1.
+fn petal_point(petal: &Petal, view: &HeadView, t: f32, len: f32, time: f32) -> (f32, f32) {
+    let base_angle = petal.angle + view.rot;
+    // The bend accelerates toward the tip, so each petal ends in a real hook.
+    let bend = petal.curl * t * t * 1.20;
+    let wave = (t * 6.5 + petal.phase + time * 0.35).sin() * 0.045 * t;
+    let angle = base_angle + bend + wave;
+
+    // Leave a small open heart instead of knotting every petal at one dot.
+    let inner = (len * 0.22).min(2.2);
+    let radius = inner + (len - inner) * t;
+    let x = view.hx + angle.cos() * radius;
+    let mut y = view.hy + angle.sin() * radius * 0.52;
+
+    // Recurve: tips lift back toward the sky like real spider-lily petals.
+    y -= petal.recurve * t.powi(3) * len * 0.30 * (0.35 + 0.65 * view.bloom);
+    (x, y)
+}
+
+fn new_falling(x: f32, y: f32, depth: f32, rng: &mut ChaCha8Rng) -> FallingPetal {
+    let direction = if rng.gen::<bool>() { 1.0 } else { -1.0 };
+    FallingPetal {
+        x,
+        y,
+        vx: direction * rng.gen_range(0.02..0.16),
+        vy: rng.gen_range(0.16..0.42),
+        angle: rng.gen_range(0.0..TAU),
+        spin: rng.gen_range(-0.30..0.30),
+        phase: rng.gen_range(0.0..TAU),
+        life: 0.0,
+        max_life: rng.gen_range(18.0..42.0),
+        size: rng.gen_range(0.6..1.4),
+        depth,
+    }
+}
+
+// ============================================================================
+// Theme implementation
+// ============================================================================
 
 impl Theme for SpiderLily {
-    fn name(&self) -> &'static str { "spider-lily" }
-    fn description(&self) -> &'static str { "彼岸花 - Red spider lilies blooming/wilting, petals drifting like blood (Tokyo Ghoul)" }
-    fn resize(&mut self, area: Rect) { self.width = area.width; self.height = area.height; let mut rng = new_rng(); self.spawn_flowers(area.width, area.height, &mut rng); }
-    fn update(&mut self, dt: f32, rng: &mut ChaCha8Rng) {
-        self.time += dt;
-        for flower in &mut self.flowers {
-            flower.stage += flower.stage_speed * dt * 60.0;
-            flower.rotation += 0.015 * dt * 60.0;
-            flower.petal_fall_timer += dt;
+    fn name(&self) -> &'static str {
+        "spider-lily"
+    }
 
-            // Spawn falling petals during wilting phase
-            if flower.stage > 1.3 && flower.stage < 1.35 && flower.petal_fall_timer > 0.5 {
-                flower.petal_fall_timer = 0.0;
-                for _ in 0..rng.gen_range(1..4) {
-                    let angle = rng.gen_range(0.0..std::f32::consts::TAU);
-                    let speed = rng.gen_range(0.2..0.8);
-                    self.petals.push(FallingPetal {
-                        x: flower.x, y: flower.y,
-                        vx: angle.cos() * speed * 0.4, vy: angle.sin() * speed * 0.4 + 0.15,
-                        rotation: rng.gen_range(0.0..std::f32::consts::TAU),
-                        rot_speed: rng.gen_range(-0.03..0.03),
-                        frame: rng.gen_range(0..SPIDER_PETAL_CHARS.len()),
-                        color: *[(0x8B,0,0), (0xB2,0x22,0x22), (0xDC,0x14,0x3C), (0xFF,0x24,0), (0x8B,0,0)].choose(rng).unwrap(),
-                        life: 0.0,
-                    });
+    fn description(&self) -> &'static str {
+        "彼岸花 — a slow night garden of red spider lilies"
+    }
+
+    fn resize(&mut self, area: Rect) {
+        let changed = area.width != self.width || area.height != self.height;
+        self.width = area.width;
+        self.height = area.height;
+
+        if changed || self.flowers.is_empty() {
+            self.flowers.clear();
+            self.falling.clear();
+            self.time = 0.0;
+            self.target = 0;
+            self.next_roll = 0.0;
+        }
+    }
+
+    fn update(&mut self, dt: f32, rng: &mut ChaCha8Rng) {
+        // A long pause must not teleport the garden.
+        let dt = dt.clamp(0.0, 0.1);
+        self.time += dt;
+        self.ensure_flowers(rng);
+
+        let ground_y = self.ground_y();
+        let time = self.time;
+
+        // Split the borrows so flowers can spawn falling petals directly.
+        let Self {
+            flowers, falling, ..
+        } = self;
+
+        for flower in flowers.iter_mut() {
+            flower.age += dt;
+            flower.growth = smoothstep((flower.age / flower.grow_time).clamp(0.0, 1.0));
+
+            let t = flower.age - flower.grow_time * 0.5;
+            let bloom = if t <= 0.0 {
+                0.0
+            } else if t < flower.bloom_time {
+                let u = t / flower.bloom_time;
+                1.0 - (1.0 - u).powi(3)
+            } else if t < flower.bloom_time + flower.hold_time {
+                1.0
+            } else {
+                let u = ((t - flower.bloom_time - flower.hold_time) / flower.wilt_time)
+                    .clamp(0.0, 1.0);
+                1.0 - smoothstep(u)
+            };
+            flower.bloom = bloom;
+
+            // Falling petals: a slow trickle in full bloom, a gentle rain while
+            // wilting, then a small farewell burst.
+            let wilting = t > flower.bloom_time + flower.hold_time;
+            let rate = if wilting {
+                1.35
+            } else if bloom > 0.97 {
+                0.05
+            } else {
+                0.20
+            };
+            flower.fall_accum += rate * dt;
+
+            if flower.fall_accum >= 1.0 && flower.age > flower.grow_time * 0.7 {
+                flower.fall_accum = 0.0;
+                let (hx, hy) = stem_point(flower, time, ground_y, 1.0);
+                let angle = rng.gen_range(0.0..TAU);
+                let radius = rng.gen_range(0.4..2.6);
+                falling.push(new_falling(
+                    hx + angle.cos() * radius,
+                    hy + angle.sin() * radius * 0.5,
+                    flower.depth,
+                    rng,
+                ));
+            }
+
+            if t > flower.bloom_time + flower.hold_time + flower.wilt_time {
+                flower.dead = true;
+                let (hx, hy) = stem_point(flower, time, ground_y, 1.0);
+                for _ in 0..rng.gen_range(3..7) {
+                    let angle = rng.gen_range(0.0..TAU);
+                    let radius = rng.gen_range(0.0..2.2);
+                    falling.push(new_falling(
+                        hx + angle.cos() * radius,
+                        hy + angle.sin() * radius * 0.5,
+                        flower.depth,
+                        rng,
+                    ));
                 }
             }
-
-            // Reset cycle
-            if flower.stage > 2.5 {
-                flower.stage = 0.0;
-                flower.stage_speed = rng.gen_range(0.005..0.015);
-                flower.x = rng.gen_range(4.0..(self.width - 4) as f32);
-                flower.y = rng.gen_range(6.0..(self.height - 6) as f32);
-                flower.petal_fall_timer = 0.0;
-            }
         }
 
-        // Update falling petals
-        self.petals.retain_mut(|p| {
-            p.x += p.vx * dt * 60.0;
-            p.y += p.vy * dt * 60.0;
-            p.rotation += p.rot_speed * dt * 60.0;
-            p.vy += 0.003 * dt * 60.0; // gentle gravity
-            p.life += dt;
-            p.life < 20.0 && p.y < self.height as f32 + 3.0
+        flowers.retain(|flower| !flower.dead);
+
+        falling.retain_mut(|petal| {
+            petal.life += dt;
+            let flutter = (time * 1.25 + petal.phase).sin();
+            petal.x += (petal.vx + flutter * 0.30) * dt;
+            petal.y += petal.vy * dt;
+            petal.vy = (petal.vy + 0.010 * dt).min(1.0);
+            petal.angle += petal.spin * dt;
+            petal.life < petal.max_life && petal.y < ground_y + 2.0
         });
     }
+
     fn draw(&mut self, buf: &mut Buffer, area: Rect) {
-        // Draw flowers
+        if area.width < 24 || area.height < 9 {
+            return;
+        }
+
+        // Sit just above the status bar so the stems are actually visible.
+        let ground_y = (area.height as f32 - 3.0).max(4.0);
+        let breath = 0.93 + 0.07 * (self.time * 0.22).sin();
+
+        self.draw_ground(buf, area, ground_y);
+
         for flower in &self.flowers {
-            self.draw_flower(buf, flower, area);
+            self.draw_stem(buf, area, flower, ground_y, breath);
+            self.draw_head(buf, area, flower, ground_y, breath);
         }
-        // Draw falling petals
-        for petal in &self.petals {
-            let x = petal.x as i32;
-            let y = petal.y as i32;
-            if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                let alpha = 1.0 - (petal.life / 20.0).min(1.0);
-                let (r, g, b) = petal.color;
-                draw_char(buf, x, y, area, SPIDER_PETAL_CHARS[petal.frame % SPIDER_PETAL_CHARS.len()],
-                    ((r as f32 * alpha) as u8, (g as f32 * alpha) as u8, (b as f32 * alpha) as u8));
-            }
-        }
+
+        self.draw_falling(buf, area, breath);
     }
 }
 
 impl SpiderLily {
-    fn draw_flower(&self, buf: &mut Buffer, flower: &SpiderFlower, area: Rect) {
-        let cx = flower.x as i32;
-        let cy = flower.y as i32;
-        if cx < 0 || cx >= area.width as i32 || cy < 0 || cy >= area.height as i32 { return; }
+    fn draw_ground(&self, buf: &mut Buffer, area: Rect, ground_y: f32) {
+        let ground_row = ground_y.round() as i32;
+        let bottom_dot = ground_row * 4 + 3;
+        let width = area.width as i32;
 
-        let bloom = flower.stage.clamp(0.0, 1.0);
-        let wilt = (flower.stage - 1.0).clamp(0.0, 1.0);
-        let size_idx = (flower.size * bloom * (1.0 - wilt * 0.4) * 3.0).floor() as usize;
-        let size_idx = size_idx.min(SPIDER_PETAL_FRAMES.len() - 1);
+        for x in 0..width {
+            let h = hash(x as u32);
 
-        // Color shifting
-        let hue_shift = (self.time * 0.08 + flower.color_phase).sin() * 0.12;
-        let base_r = (0x8B as f32 + hue_shift * 60.0) as u8;
-        let base_g = (0x00 as f32 + hue_shift * 40.0) as u8;
+            // A broken, living moss line rather than a solid rule.
+            if h % 9 < 3 {
+                let color = if h % 5 == 0 { C_MOSS_LIGHT } else { C_MOSS };
+                let dx = x * 2 + (h & 1) as i32;
+                plot_dot(buf, area, dx, bottom_dot, color);
+            }
 
-        let frame = SPIDER_PETAL_FRAMES[size_idx];
-        let frame_h = frame.len() as i32;
-        let frame_w = frame[0].len() as i32;
-        let start_y = cy - frame_h / 2;
-        let start_x = cx - frame_w / 2;
-
-        for (fy, line) in frame.iter().enumerate() {
-            for (fx, ch) in line.chars().enumerate() {
-                if ch != ' ' {
-                    let px = start_x + fx as i32;
-                    let py = start_y + fy as i32;
-                    if px >= 0 && px < area.width as i32 && py >= 0 && py < area.height as i32 {
-                        let alpha = bloom * (1.0 - wilt) * (0.7 + 0.3 * (fy as f32 / frame_h as f32));
-                        draw_char(buf, px, py, area, ch,
-                            ((base_r as f32 * alpha) as u8, (base_g as f32 * alpha) as u8, 0));
-                    }
-                }
+            // Sparse blades of grass, swaying almost imperceptibly.
+            if h % 17 == 0 {
+                let base_x = x as f32 * 2.0 + ((h >> 3) & 1) as f32;
+                let sway = (self.time * 0.35 + x as f32 * 0.6).sin() * 0.9;
+                let blade = 2.0 + (h % 5) as f32;
+                let tip_x = base_x + sway;
+                let tip_y = bottom_dot as f32 - blade;
+                draw_dot_line(
+                    buf,
+                    area,
+                    base_x,
+                    bottom_dot as f32,
+                    tip_x,
+                    tip_y,
+                    0.5,
+                    0.35,
+                    C_MOSS,
+                    C_MOSS_LIGHT,
+                );
             }
         }
 
-        // Center stamen
-        if bloom > 0.4 {
-            draw_char(buf, cx, cy, area, '✶', (0xFF, 0xD7, 0x00));
-        }
-
-        // Long curved stamens (6 radiating)
-        if bloom > 0.5 {
-            for i in 0..6 {
-                let angle = flower.rotation + i as f32 * std::f32::consts::TAU / 6.0 + 0.5;
-                for step in 1..=(6 + (flower.size * 4.0) as i32) {
-                    let px = cx + (angle.cos() * step as f32 * 1.2) as i32;
-                    let py = cy + (angle.sin() * step as f32 * 0.5) as i32;
-                    if px >= 0 && px < area.width as i32 && py >= 0 && py < area.height as i32 {
-                        let alpha = 0.6 * (1.0 - step as f32 / 20.0);
-                        draw_char(buf, px, py, area, '│', ((0xFF as f32 * alpha) as u8, (0xD7 as f32 * alpha) as u8, 0));
-                    }
+        // Little root clusters where the stems meet the soil.
+        for flower in &self.flowers {
+            let base_x = flower.base_x * 2.0;
+            for i in -1..=1 {
+                let h = hash((flower.base_x as u32).wrapping_mul(31).wrapping_add(i as u32));
+                if h % 3 != 0 {
+                    continue;
                 }
+                let dx = base_x + i as f32 * 1.1;
+                let dy = bottom_dot as f32 - (h % 3) as f32;
+                stamp_disc(buf, area, dx, dy, 0.5, C_MOSS_LIGHT);
             }
         }
     }
-}
 
-// ============================================================================
-// THEME 2: SAKURA NIGHT (夜桜) - Cherry blossoms at night
-// ============================================================================
+    fn draw_stem(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        flower: &Flower,
+        ground_y: f32,
+        breath: f32,
+    ) {
+        if flower.growth <= 0.02 {
+            return;
+        }
 
-struct SakuraTree {
-    x: f32, y: f32,
-    trunk_h: usize,
-    branches: Vec<Branch>,
-    sway_phase: f32, sway_speed: f32,
-    blossom_phase: f32,
-}
+        let steps = 80;
+        let fade = (0.30 + 0.70 * flower.growth) * flower.depth * breath;
 
-struct Branch {
-    start_y: f32,
-    angle: f32,
-    length: f32,
-    blossoms: Vec<Blossom>,
-}
+        let (mut px, mut py) = stem_point(flower, self.time, ground_y, 0.0);
+        let mut pr = 0.95;
+        let mut pc = mul_color(C_STEM_DARK, fade);
 
-struct Blossom {
-    offset: f32,      // position along branch
-    size: f32,
-    phase: f32,       // bloom phase
-    color_idx: usize,
-}
+        for i in 1..=steps {
+            let s = i as f32 / steps as f32;
+            let (x, y) = stem_point(flower, self.time, ground_y, s);
+            // A single-dot line, with just a small flare where it meets the soil.
+            let radius = 0.95 + (0.35 - 0.95) * s;
+            let color = mul_color(
+                lerp_color(C_STEM_DARK, C_STEM_LIGHT, s * 0.85),
+                fade,
+            );
 
-struct FallingPetalSakura {
-    x: f32, y: f32,
-    vx: f32, vy: f32,
-    rotation: f32, rot_speed: f32,
-    frame: usize,
-    color: (u8, u8, u8),
-    life: f32,
-}
+            draw_dot_line(
+                buf,
+                area,
+                px * 2.0,
+                py * 4.0,
+                x * 2.0,
+                y * 4.0,
+                pr,
+                radius,
+                pc,
+                color,
+            );
 
-const SAKURA_BLOSSOM_FRAMES: &[&str] = &["·", "∘", "◦", "●", "✿", "❀", "✿", "❀"];
-const SAKURA_COLORS: &[(u8, u8, u8)] = &[
-    (0xFF, 0xB7, 0xC5), (0xFF, 0xA0, 0xB4), (0xFF, 0x85, 0xA3),
-    (0xFF, 0x69, 0xB4), (0xE8, 0x5D, 0x9E), (0xFF, 0xE4, 0xE1),
-];
-
-const MOON_FRAMES: &[&[&str]] = &[
-    &["  ▄▄  ", " ████ ", "██████", " ▀▀▀▀ "],
-    &[" ▄▄▄▄ ", "██████", "██████", " ▀▀▀▀ "],
-];
-
-struct SakuraNight {
-    trees: Vec<SakuraTree>,
-    petals: Vec<FallingPetalSakura>,
-    moon_x: f32, moon_y: f32,
-    moon_phase: usize,
-    time: f32,
-    width: u16, height: u16,
-}
-
-impl SakuraNight {
-    fn new() -> Self {
-        Self { trees: Vec::new(), petals: Vec::new(), moon_x: 0.0, moon_y: 0.0, moon_phase: 0, time: 0.0, width: 0, height: 0 }
-    }
-    fn spawn(&mut self, width: u16, height: u16, rng: &mut ChaCha8Rng) {
-        self.trees.clear(); self.petals.clear();
-        let count = (width as f32 / 28.0).clamp(2.0, 7.0) as usize;
-        let ground = height as f32 - 1.0;
-        self.moon_x = rng.gen_range(width as f32 * 0.15..width as f32 * 0.85);
-        self.moon_y = rng.gen_range(3.0..height as f32 * 0.35);
-        for _ in 0..count {
-            let h = rng.gen_range(8..14);
-            let mut branches = Vec::new();
-            for b in 0..rng.gen_range(4..7) {
-                let by = ground - (h as f32 * 0.3) - b as f32 * 2.5;
-                branches.push(Branch {
-                    start_y: by,
-                    angle: rng.gen_range(-0.5..0.5),
-                    length: rng.gen_range(6.0..14.0),
-                    blossoms: (0..rng.gen_range(8..18)).map(|_| Blossom {
-                        offset: rng.gen_range(0.1..0.95),
-                        size: rng.gen_range(0.5..1.2),
-                        phase: rng.gen_range(0.0..std::f32::consts::TAU),
-                        color_idx: rng.gen_range(0..SAKURA_COLORS.len()),
-                    }).collect(),
-                });
-            }
-            self.trees.push(SakuraTree {
-                x: rng.gen_range(6.0..(width - 6) as f32),
-                y: ground,
-                trunk_h: h,
-                branches,
-                sway_phase: rng.gen_range(0.0..std::f32::consts::TAU),
-                sway_speed: rng.gen_range(0.0015..0.004),
-                blossom_phase: rng.gen_range(0.0..std::f32::consts::TAU),
-            });
+            px = x;
+            py = y;
+            pr = radius;
+            pc = color;
         }
     }
-}
 
-impl Theme for SakuraNight {
-    fn name(&self) -> &'static str { "sakura-night" }
-    fn description(&self) -> &'static str { "夜桜 - Cherry blossoms at night, pink petals falling under moonlight" }
-    fn resize(&mut self, area: Rect) { self.width = area.width; self.height = area.height; let mut rng = new_rng(); self.spawn(area.width, area.height, &mut rng); }
-    fn update(&mut self, dt: f32, rng: &mut ChaCha8Rng) {
-        self.time += dt;
-        // Moon phase cycle
-        if (self.time * 0.002).floor() as usize != self.moon_phase {
-            self.moon_phase = (self.moon_phase + 1) % MOON_FRAMES.len();
+    fn draw_head(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        flower: &Flower,
+        ground_y: f32,
+        breath: f32,
+    ) {
+        let (hx, hy) = stem_point(flower, self.time, ground_y, 1.0);
+        let (tx, ty) = stem_point(flower, self.time, ground_y, 0.96);
+
+        // The head leans with the stem, then drifts a hair on its own.
+        let tilt = ((hx - tx).atan2((ty - hy).max(0.0001)) * 0.65).clamp(-0.55, 0.55);
+        let rot = tilt
+            + flower.head_rotation
+            + (self.time * 0.045 + flower.sway_phase * 1.3).sin() * 0.035;
+
+        if flower.bloom < 0.015 {
+            self.draw_bud(buf, area, hx, hy, flower, breath);
+            return;
         }
 
-        for tree in &mut self.trees {
-            tree.sway_phase += tree.sway_speed * dt * 60.0;
-            tree.blossom_phase += 0.02 * dt * 60.0;
+        let view = HeadView {
+            hx,
+            hy,
+            rot,
+            bloom: flower.bloom,
+            depth: flower.depth,
+            red: 1.0 + flower.hue * 0.10,
+            gb: (1.0 - flower.hue * 0.25).clamp(0.72, 1.20),
+            breath,
+        };
 
-            // Spawn falling petals
-            if rng.gen::<f32>() < 0.006 * dt * 60.0 {
-                let bx = tree.x + (tree.sway_phase.sin() * tree.trunk_h as f32 * 0.4);
-                for branch in &tree.branches {
-                    for blossom in &branch.blossoms {
-                        if rng.gen::<f32>() < 0.05 {
-                            let px = bx + branch.angle.sin() * branch.length * blossom.offset * 0.5;
-                            let py = branch.start_y - branch.angle.cos() * branch.length * blossom.offset;
-                            self.petals.push(FallingPetalSakura {
-                                x: px, y: py,
-                                vx: rng.gen_range(-0.25..0.25) + (tree.sway_phase.sin() * 0.1),
-                                vy: rng.gen_range(0.12..0.35),
-                                rotation: rng.gen_range(0.0..std::f32::consts::TAU),
-                                rot_speed: rng.gen_range(-0.02..0.02),
-                                frame: rng.gen_range(0..SAKURA_BLOSSOM_FRAMES.len()),
-                                color: SAKURA_COLORS[blossom.color_idx],
-                                life: 0.0,
-                            });
-                        }
-                    }
-                }
-            }
+        self.draw_aura(buf, area, &view, flower.sway_phase);
+
+        // Stamens sit behind the petals; only their gold anthers peek through.
+        self.draw_stamens(buf, area, flower, &view);
+
+        for petal in flower.petals.iter() {
+            self.draw_petal(buf, area, petal, &view, 1.0);
         }
 
-        self.petals.retain_mut(|p| {
-            p.x += p.vx * dt * 60.0;
-            p.y += p.vy * dt * 60.0;
-            p.rotation += p.rot_speed * dt * 60.0;
-            p.vx += rng.gen_range(-0.008..0.008) * dt * 60.0;
-            p.life += dt;
-            p.life < 25.0 && p.y < self.height as f32 + 3.0
-        });
+        // Dark heart with a glint of gold.
+        let core = mul_color(C_PETAL_DEEP, view.depth * view.bloom * view.breath * 0.85);
+        stamp_disc_force(buf, area, hx * 2.0, hy * 4.0, 0.85 + view.bloom * 0.25, core);
+        stamp_disc(
+            buf,
+            area,
+            hx * 2.0,
+            hy * 4.0,
+            0.5,
+            mul_color(C_ANTHER, view.depth * view.bloom * 0.55),
+        );
     }
-    fn draw(&mut self, buf: &mut Buffer, area: Rect) {
-        // Draw moon
-        let moon_frame = MOON_FRAMES[self.moon_phase];
-        let mx = self.moon_x as i32;
-        let my = self.moon_y as i32;
-        for (fy, line) in moon_frame.iter().enumerate() {
-            for (fx, ch) in line.chars().enumerate() {
-                if ch != ' ' {
-                    draw_char(buf, mx - 3 + fx as i32, my - 2 + fy as i32, area, ch, (0xFF, 0xF0, 0xA0));
-                }
-            }
+
+    fn draw_bud(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        hx: f32,
+        hy: f32,
+        flower: &Flower,
+        breath: f32,
+    ) {
+        let depth = flower.depth * breath;
+        let dark = mul_color(C_PETAL_DEEP, depth * 0.85);
+        let warm = mul_color(C_PETAL_MID, depth * 0.55);
+
+        for i in 0..4 {
+            let yy = hy * 4.0 + (i as f32 - 1.5) * 1.15;
+            let radius = if i == 0 || i == 3 { 0.5 } else { 0.7 };
+            let color = if i == 3 { warm } else { dark };
+            stamp_disc(buf, area, hx * 2.0, yy, radius, color);
         }
 
-        // Draw trees
-        for tree in &self.trees {
-            let sway = (tree.sway_phase.sin() * 1.8) as i32;
-            let base_x = tree.x as i32 + sway;
-            let base_y = tree.y as i32;
-
-            // Trunk with segments
-            for i in 0..tree.trunk_h {
-                let sy = base_y - i as i32;
-                let sx = base_x + (sway * (i as i32) / tree.trunk_h as i32);
-                if sx >= 0 && sx < area.width as i32 && sy >= 0 && sy < area.height as i32 {
-                    draw_char(buf, sx, sy, area, '│', (0x3D, 0x2B, 0x1F));
-                    if i % 3 == 0 {
-                        draw_char(buf, sx, sy, area, '┼', (0x4D, 0x3B, 0x2F));
-                    }
-                }
-            }
-
-            // Branches with blossoms
-            for branch in &tree.branches {
-                let sway_b = (branch.angle.sin() * 2.0) as i32;
-                for step in 0..=(branch.length as i32) {
-                    let bx = base_x + sway_b + (branch.angle.cos() * step as f32) as i32;
-                    let by = (branch.start_y - branch.angle.sin() * step as f32) as i32;
-                    if bx >= 0 && bx < area.width as i32 && by >= 0 && by < area.height as i32 {
-                        draw_char(buf, bx, by, area, '·', (0x5D, 0x4B, 0x3F));
-                    }
-                }
-                // Blossoms on branch
-                for blossom in &branch.blossoms {
-                    let bx = base_x + sway_b + (branch.angle.cos() * branch.length * blossom.offset * 0.5) as i32;
-                    let by = (branch.start_y - branch.angle.sin() * branch.length * blossom.offset) as i32;
-                    if bx >= 0 && bx < area.width as i32 && by >= 0 && by < area.height as i32 {
-                        let bloom = (tree.blossom_phase.sin() * 0.3 + 0.7) * blossom.size;
-                        let (r, g, b) = SAKURA_COLORS[blossom.color_idx];
-                        let ch = SAKURA_BLOSSOM_FRAMES[(tree.blossom_phase * 2.0).floor() as usize % SAKURA_BLOSSOM_FRAMES.len()];
-                        draw_char(buf, bx, by, area, ch.chars().next().unwrap(), ((r as f32 * bloom) as u8, (g as f32 * bloom) as u8, (b as f32 * bloom) as u8));
-                    }
-                }
-            }
-        }
-
-        // Falling petals
-        for petal in &self.petals {
-            let x = petal.x as i32;
-            let y = petal.y as i32;
-            if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                let alpha = 1.0 - (petal.life / 25.0).min(1.0);
-                let (r, g, b) = petal.color;
-                draw_char(buf, x, y, area, SAKURA_BLOSSOM_FRAMES[petal.frame % SAKURA_BLOSSOM_FRAMES.len()].chars().next().unwrap(),
-                    ((r as f32 * alpha) as u8, (g as f32 * alpha) as u8, (b as f32 * alpha) as u8));
-            }
-        }
+        // A tiny sepal keeps the bud attached to its stem.
+        stamp_disc(
+            buf,
+            area,
+            hx * 2.0,
+            hy * 4.0 + 2.4,
+            0.5,
+            mul_color(C_STEM_LIGHT, depth),
+        );
     }
-}
 
-// ============================================================================
-// THEME 3: ABYSSAL BLOOM (深海発光) - Deep sea bioluminescence
-// ============================================================================
+    fn draw_aura(&self, buf: &mut Buffer, area: Rect, view: &HeadView, sway_phase: f32) {
+        let pulse = 0.85 + 0.15 * (self.time * 0.30 + sway_phase).sin();
+        let intensity = view.bloom * view.depth * view.breath * pulse * 0.32;
 
-#[derive(Clone, Copy)]
-enum AbyssalKind { Jellyfish, CombJelly, Siphonophore, Anglerfish }
-
-struct AbyssalCreature {
-    x: f32, y: f32,
-    vx: f32, vy: f32,
-    kind: AbyssalKind,
-    pulse_phase: f32, pulse_speed: f32,
-    size: f32,
-    color: (u8, u8, u8),
-    trail: Vec<(f32, f32)>,
-}
-
-struct AbyssalParticle {
-    x: f32, y: f32,
-    vx: f32, vy: f32,
-    color: (u8, u8, u8),
-    life: f32,
-    ch: char,
-    size: f32,
-}
-
-const ABYSSAL_COLORS: &[(u8, u8, u8)] = &[
-    (0x00, 0xFF, 0xFF), (0x00, 0xBF, 0xFF), (0x40, 0x00, 0xFF),
-    (0x80, 0x00, 0xFF), (0xBF, 0x00, 0xFF), (0xFF, 0x00, 0xBF),
-    (0x00, 0xFF, 0xBF), (0x00, 0xFF, 0x80),
-];
-
-struct AbyssalBloom {
-    creatures: Vec<AbyssalCreature>,
-    particles: Vec<AbyssalParticle>,
-    time: f32,
-    width: u16, height: u16,
-}
-
-impl AbyssalBloom {
-    fn new() -> Self { Self { creatures: Vec::new(), particles: Vec::new(), time: 0.0, width: 0, height: 0 } }
-    fn spawn(&mut self, width: u16, height: u16, rng: &mut ChaCha8Rng) {
-        self.creatures.clear();
-        let count = ((width * height) as f32 / 5000.0).clamp(2.0, 6.0) as usize;
-        for _ in 0..count {
-            let kind = match rng.gen_range(0..4) {
-                0 => AbyssalKind::Jellyfish, 1 => AbyssalKind::CombJelly,
-                2 => AbyssalKind::Siphonophore, _ => AbyssalKind::Anglerfish,
-            };
-            self.creatures.push(AbyssalCreature {
-                x: rng.gen_range(8.0..(width - 8) as f32),
-                y: rng.gen_range(8.0..(height - 8) as f32),
-                vx: rng.gen_range(-0.15..0.15), vy: rng.gen_range(-0.08..0.08),
-                kind, pulse_phase: rng.gen_range(0.0..std::f32::consts::TAU),
-                pulse_speed: rng.gen_range(0.015..0.05), size: rng.gen_range(1.2..2.2),
-                color: *ABYSSAL_COLORS.choose(rng).unwrap(), trail: Vec::new(),
-            });
-        }
-    }
-}
-
-impl Theme for AbyssalBloom {
-    fn name(&self) -> &'static str { "abyssal-bloom" }
-    fn description(&self) -> &'static str { "深海発光 - Bioluminescent deep sea creatures pulsing in darkness" }
-    fn resize(&mut self, area: Rect) { self.width = area.width; self.height = area.height; let mut rng = new_rng(); self.spawn(area.width, area.height, &mut rng); }
-    fn update(&mut self, dt: f32, rng: &mut ChaCha8Rng) {
-        self.time += dt;
-        for c in &mut self.creatures {
-            c.pulse_phase += c.pulse_speed * dt * 60.0;
-            c.trail.insert(0, (c.x, c.y));
-            if c.trail.len() > 12 { c.trail.pop(); }
-            c.x += c.vx * dt * 60.0; c.y += c.vy * dt * 60.0;
-            if c.x < 5.0 { c.x = 5.0; c.vx = c.vx.abs(); }
-            if c.x > self.width as f32 - 5.0 { c.x = self.width as f32 - 5.0; c.vx = -c.vx.abs(); }
-            if c.y < 5.0 { c.y = 5.0; c.vy = c.vy.abs(); }
-            if c.y > self.height as f32 - 5.0 { c.y = self.height as f32 - 5.0; c.vy = -c.vy.abs(); }
-
-            // Spawn particles
-            if rng.gen::<f32>() < 0.015 * dt * 60.0 {
-                self.particles.push(AbyssalParticle {
-                    x: c.x, y: c.y,
-                    vx: rng.gen_range(-0.4..0.4), vy: rng.gen_range(-0.4..0.4),
-                    color: c.color, life: 0.0,
-                    ch: *['·', '∘', '○', '●', '✦', '⋆', '✧', '◆'].choose(rng).unwrap(),
-                    size: rng.gen_range(0.5..1.5),
-                });
-            }
-        }
-        self.particles.retain_mut(|p| {
-            p.x += p.vx * dt * 60.0; p.y += p.vy * dt * 60.0;
-            p.life += dt; p.life < 10.0
-        });
-    }
-    fn draw(&mut self, buf: &mut Buffer, area: Rect) {
-        for c in &self.creatures { self.draw_creature(buf, c, area); }
-        for p in &self.particles {
-            let x = p.x as i32; let y = p.y as i32;
-            if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                let alpha = 1.0 - (p.life / 10.0).min(1.0);
-                let (r, g, b) = p.color;
-                draw_char(buf, x, y, area, p.ch, ((r as f32 * alpha * p.size) as u8, (g as f32 * alpha * p.size) as u8, (b as f32 * alpha * p.size) as u8));
-            }
-        }
-    }
-}
-
-impl AbyssalBloom {
-    fn draw_creature(&self, buf: &mut Buffer, c: &AbyssalCreature, area: Rect) {
-        let cx = c.x as i32; let cy = c.y as i32;
-        if cx < 0 || cx >= area.width as i32 || cy < 0 || cy >= area.height as i32 { return; }
-        let pulse = (c.pulse_phase.sin() + 1.0) / 2.0;
-        let size = (c.size * (0.4 + pulse * 0.6)) as i32;
-        let (r, g, b) = c.color;
-
-        // Draw trail
-        for (i, &(tx, ty)) in c.trail.iter().enumerate() {
-            let alpha = (1.0 - i as f32 / c.trail.len() as f32) * 0.3 * pulse;
-            let tx_i = tx as i32; let ty_i = ty as i32;
-            if tx_i >= 0 && tx_i < area.width as i32 && ty_i >= 0 && ty_i < area.height as i32 {
-                draw_char(buf, tx_i, ty_i, area, '·', ((r as f32 * alpha) as u8, (g as f32 * alpha) as u8, (b as f32 * alpha) as u8));
-            }
-        }
-
-        match c.kind {
-            AbyssalKind::Jellyfish => {
-                // Bell
-                for dy in -size..=size {
-                    let w = ((size * size - dy * dy) as f32).sqrt() as i32;
-                    for dx in -w..=w {
-                        let x = cx + dx; let y = cy + dy;
-                        if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                            let alpha = (0.3 + pulse * 0.7) * (1.0 - dy.abs() as f32 / size as f32 * 0.5);
-                            draw_char(buf, x, y, area, if dy < 0 { '╭' } else { '╰' }, ((r as f32 * alpha) as u8, (g as f32 * alpha) as u8, (b as f32 * alpha) as u8));
-                        }
-                    }
-                }
-                // Tentacles
-                for i in 0..8 {
-                    let angle = self.time * 0.4 + i as f32 * 0.78;
-                    for step in 1..=size * 4 {
-                        let x = cx + (angle.cos() * step as f32 * 0.4) as i32;
-                        let y = cy + size + step;
-                        if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                            draw_char(buf, x, y, area, '│', (r, g, b));
-                        }
-                    }
-                }
-            }
-            AbyssalKind::CombJelly => {
-                // Oval body with comb rows
-                for dy in -size..=size {
-                    let w = (size - dy.abs() / 2) as i32;
-                    for dx in -w..=w {
-                        let x = cx + dx; let y = cy + dy;
-                        if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                            let ch = if dx.abs() == w { if dy < 0 { '╭' } else { '╰' } } else { '◆' };
-                            let alpha = pulse * (1.0 - dx.abs() as f32 / w as f32 * 0.3);
-                            draw_char(buf, x, y, area, ch, ((r as f32 * alpha) as u8, (g as f32 * alpha) as u8, (b as f32 * alpha) as u8));
-                        }
-                    }
-                }
-                // Iridescent comb rows
-                for row in 0..5 {
-                    let ry = cy - size + row * size * 2 / 5;
-                    for dx in -size..=size {
-                        let x = cx + dx;
-                        if x >= 0 && x < area.width as i32 && ry >= 0 && ry < area.height as i32 {
-                            let hue = (self.time * 3.0 + dx as f32 * 0.4 + row as f32).sin();
-                            let cr = ((hue + 1.0) * 127.0) as u8;
-                            let cg = ((hue * 0.5 + 1.0) * 127.0) as u8;
-                            draw_char(buf, x, ry, area, '✦', (cr, cg, 255));
-                        }
-                    }
-                }
-            }
-            AbyssalKind::Siphonophore => {
-                // Chain of zooids
-                for i in 0..10 {
-                    let sy = cy + i * 3;
-                    let sx = cx + (self.time * 0.5 + i as f32 * 0.4).sin() as i32 * 3;
-                    if sx >= 0 && sx < area.width as i32 && sy >= 0 && sy < area.height as i32 {
-                        let alpha = (1.0 - i as f32 / 10.0) * pulse;
-                        draw_char(buf, sx, sy, area, '●', ((r as f32 * alpha) as u8, (g as f32 * alpha) as u8, (b as f32 * alpha) as u8));
-                    }
-                }
-            }
-            AbyssalKind::Anglerfish => {
-                draw_char(buf, cx, cy, area, '🐟', (r, g, b));
-                let lure_x = cx + (self.time * 2.5).cos() as i32 * 4;
-                let lure_y = cy - 3;
-                if lure_x >= 0 && lure_x < area.width as i32 && lure_y >= 0 && lure_y < area.height as i32 {
-                    draw_char(buf, lure_x, lure_y, area, '✦', (0xFF, 0xFF, 0x00));
-                }
-            }
-        }
-    }
-}
-
-// ============================================================================
-// THEME 4: FIREFLY DUSK (蛍の黄昏) - Fireflies at dusk
-// ============================================================================
-
-struct Firefly {
-    x: f32, y: f32,
-    vx: f32, vy: f32,
-    blink_phase: f32, blink_speed: f32,
-    blink_pattern: usize,
-    color: (u8, u8, u8),
-    trail: Vec<(f32, f32)>,
-}
-
-struct GrassBlade {
-    x: f32, base_y: f32,
-    height: usize,
-    sway_phase: f32, sway_speed: f32,
-    color: (u8, u8, u8),
-}
-
-const FIREFLY_COLORS: &[(u8, u8, u8)] = &[
-    (0xFF, 0xFF, 0x00), (0xFF, 0xE4, 0x00), (0xAD, 0xFF, 0x2F), (0xFF, 0xD7, 0x00), (0xFF, 0xF0, 0x50),
-];
-
-const GRASS_COLORS: &[(u8, u8, u8)] = &[
-    (0x1A, 0x5C, 0x2E), (0x22, 0x6B, 0x3A), (0x15, 0x4D, 0x25), (0x2E, 0x8B, 0x57),
-];
-
-struct FireflyDusk {
-    fireflies: Vec<Firefly>,
-    grass: Vec<GrassBlade>,
-    time: f32,
-    width: u16, height: u16,
-}
-
-impl FireflyDusk {
-    fn new() -> Self { Self { fireflies: Vec::new(), grass: Vec::new(), time: 0.0, width: 0, height: 0 } }
-    fn spawn(&mut self, width: u16, height: u16, rng: &mut ChaCha8Rng) {
-        self.fireflies.clear(); self.grass.clear();
-        for _ in 0..((width * height) as f32 / 6000.0).clamp(4.0, 15.0) as usize {
-            self.fireflies.push(Firefly {
-                x: rng.gen_range(0.0..width as f32),
-                y: rng.gen_range(0.0..height as f32 * 0.75),
-                vx: rng.gen_range(-0.2..0.2), vy: rng.gen_range(-0.15..0.15),
-                blink_phase: rng.gen_range(0.0..std::f32::consts::TAU),
-                blink_speed: rng.gen_range(0.04..0.12),
-                blink_pattern: rng.gen_range(0..3),
-                color: *FIREFLY_COLORS.choose(rng).unwrap(),
-                trail: Vec::new(),
-            });
-        }
-        let ground = height as f32 - 1.0;
-        for x in (0..width).step_by(2) {
-            self.grass.push(GrassBlade {
-                x: x as f32 + rng.gen_range(-0.4..0.4), base_y: ground,
-                height: rng.gen_range(3..7), sway_phase: rng.gen_range(0.0..std::f32::consts::TAU),
-                sway_speed: rng.gen_range(0.0008..0.002),
-                color: *GRASS_COLORS.choose(rng).unwrap(),
-            });
-        }
-    }
-}
-
-impl Theme for FireflyDusk {
-    fn name(&self) -> &'static str { "firefly-dusk" }
-    fn description(&self) -> &'static str { "蛍の黄昏 - Fireflies dancing at dusk, grass swaying gently" }
-    fn resize(&mut self, area: Rect) { self.width = area.width; self.height = area.height; let mut rng = new_rng(); self.spawn(area.width, area.height, &mut rng); }
-    fn update(&mut self, dt: f32, rng: &mut ChaCha8Rng) {
-        self.time += dt;
-        for f in &mut self.fireflies {
-            f.blink_phase += f.blink_speed * dt * 60.0;
-            f.trail.insert(0, (f.x, f.y));
-            if f.trail.len() > 8 { f.trail.pop(); }
-            f.x += f.vx * dt * 60.0; f.y += f.vy * dt * 60.0;
-            f.vx += rng.gen_range(-0.015..0.015) * dt * 60.0;
-            f.vy += rng.gen_range(-0.015..0.015) * dt * 60.0;
-            f.vx = f.vx.clamp(-0.4, 0.4); f.vy = f.vy.clamp(-0.25, 0.25);
-            if f.x < 0.0 { f.x = self.width as f32; } if f.x > self.width as f32 { f.x = 0.0; }
-            if f.y < 0.0 { f.y = self.height as f32 * 0.75; } if f.y > self.height as f32 * 0.75 { f.y = 0.0; }
-        }
-        for g in &mut self.grass { g.sway_phase += g.sway_speed * dt * 60.0; }
-    }
-    fn draw(&mut self, buf: &mut Buffer, area: Rect) {
-        // Grass
-        for g in &self.grass {
-            let x = g.x as i32; let by = g.base_y as i32;
-            let h = g.height as i32;
-            for i in 0..h {
-                let sway = (g.sway_phase.sin() * (1.0 + i as f32 * 0.3)) as i32;
-                let sx = x + sway; let sy = by - i;
-                if sx >= 0 && sx < area.width as i32 && sy >= 0 && sy < area.height as i32 {
-                    let ch = if i == h - 1 { '╿' } else { '│' };
-                    let alpha = 0.4 + 0.6 * (1.0 - i as f32 / h as f32);
-                    let (r, g_, b) = g.color;
-                    draw_char(buf, sx, sy, area, ch, ((r as f32 * alpha) as u8, (g_ as f32 * alpha) as u8, (b as f32 * alpha) as u8));
-                }
-            }
-        }
-        // Fireflies with trails
-        for f in &self.fireflies {
-            // Trail
-            for (i, &(tx, ty)) in f.trail.iter().enumerate() {
-                let tx_i = tx as i32; let ty_i = ty as i32;
-                if tx_i >= 0 && tx_i < area.width as i32 && ty_i >= 0 && ty_i < area.height as i32 {
-                    let alpha = (1.0 - i as f32 / f.trail.len() as f32) * 0.4;
-                    let (r, g, b) = f.color;
-                    draw_char(buf, tx_i, ty_i, area, '·', ((r as f32 * alpha) as u8, (g as f32 * alpha) as u8, (b as f32 * alpha) as u8));
-                }
-            }
-            // Main body
-            let x = f.x as i32; let y = f.y as i32;
-            if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                let blink = match f.blink_pattern {
-                    0 => (f.blink_phase.sin() + 1.0) / 2.0,                    // Smooth pulse
-                    1 => if (f.blink_phase * 2.0).sin() > 0.0 { 1.0 } else { 0.1 }, // Sharp flash
-                    _ => (f.blink_phase.sin() * 0.5 + 0.5).powf(2.0),          // Slow fade
-                };
-                if blink > 0.15 {
-                    let (r, g, b) = f.color;
-                    let ch = if blink > 0.8 { '✦' } else if blink > 0.5 { '⋆' } else { '·' };
-                    draw_char(buf, x, y, area, ch, ((r as f32 * blink) as u8, (g as f32 * blink) as u8, (b as f32 * blink) as u8));
-                    // Glow halo
-                    if blink > 0.6 {
-                        for (dx, dy) in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,-1),(-1,1),(1,1)] {
-                            let hx = x + dx; let hy = y + dy;
-                            if hx >= 0 && hx < area.width as i32 && hy >= 0 && hy < area.height as i32 {
-                                let (r, g, b) = f.color;
-                                draw_char(buf, hx, hy, area, '·', ((r as f32 * blink * 0.3) as u8, (g as f32 * blink * 0.3) as u8, (b as f32 * blink * 0.3) as u8));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ============================================================================
-// THEME 5: AURORA VOID (極光の虚空) - Cosmic aurora
-// ============================================================================
-
-struct AuroraCurtain {
-    x: f32, phase: f32, speed: f32,
-    color1: (u8, u8, u8), color2: (u8, u8, u8),
-    width: f32, intensity: f32,
-}
-
-struct StarAurora {
-    x: f32, y: f32,
-    brightness: f32, twinkle_speed: f32, twinkle_phase: f32,
-    color: (u8, u8, u8),
-}
-
-const AURORA_COLOR_PAIRS: &[((u8,u8,u8), (u8,u8,u8))] = &[
-    ((0x00,0xFF,0x7F), (0x00,0xBF,0xFF)),
-    ((0xBF,0x00,0xFF), (0xFF,0x00,0x7F)),
-    ((0xFF,0xD7,0x00), (0xFF,0x8C,0x00)),
-    ((0x00,0xFF,0xBF), (0x00,0xFF,0xFF)),
-];
-
-struct AuroraVoid {
-    curtains: Vec<AuroraCurtain>,
-    stars: Vec<StarAurora>,
-    time: f32,
-    width: u16, height: u16,
-}
-
-impl AuroraVoid {
-    fn new() -> Self { Self { curtains: Vec::new(), stars: Vec::new(), time: 0.0, width: 0, height: 0 } }
-    fn spawn(&mut self, width: u16, height: u16, rng: &mut ChaCha8Rng) {
-        self.curtains.clear(); self.stars.clear();
+        // Golden-angle spiral: even, organic, never flickering.
         for i in 0..6 {
-            let (c1, c2) = *AURORA_COLOR_PAIRS.choose(rng).unwrap();
-            self.curtains.push(AuroraCurtain {
-                x: i as f32 * width as f32 / 6.0 + rng.gen_range(-15.0..15.0),
-                phase: rng.gen_range(0.0..std::f32::consts::TAU),
-                speed: rng.gen_range(0.0003..0.0015),
-                color1: c1, color2: c2,
-                width: rng.gen_range(25.0..50.0),
-                intensity: rng.gen_range(0.6..1.0),
-            });
-        }
-        for _ in 0..((width * height) as f32 / 400.0).clamp(30.0, 120.0) as usize {
-            self.stars.push(StarAurora {
-                x: rng.gen_range(0.0..width as f32), y: rng.gen_range(0.0..height as f32),
-                brightness: rng.gen_range(0.15..1.0),
-                twinkle_speed: rng.gen_range(0.015..0.06),
-                twinkle_phase: rng.gen_range(0.0..std::f32::consts::TAU),
-                color: *[(0xFF,0xFF,0xFF), (0xFF,0xF0,0xE0), (0xE0,0xE0,0xFF), (0xFF,0xFF,0xE0)].choose(rng).unwrap(),
-            });
+            let angle = i as f32 * 2.399_963 + sway_phase;
+            let radius = 3.5 + ((i * 7) % 9) as f32 * 0.55;
+            let falloff = (1.0 - radius / 10.0).max(0.0);
+            if falloff <= 0.0 {
+                continue;
+            }
+
+            let color = mul_color(C_GLOW, intensity * falloff);
+            let x = view.hx + angle.cos() * radius;
+            let y = view.hy + angle.sin() * radius * 0.5;
+            stamp_disc(buf, area, x * 2.0, y * 4.0, 0.5, color);
         }
     }
-}
 
-impl Theme for AuroraVoid {
-    fn name(&self) -> &'static str { "aurora-void" }
-    fn description(&self) -> &'static str { "極光の虚空 - Cosmic aurora curtains drifting, stars twinkling" }
-    fn resize(&mut self, area: Rect) { self.width = area.width; self.height = area.height; let mut rng = new_rng(); self.spawn(area.width, area.height, &mut rng); }
-    fn update(&mut self, dt: f32, rng: &mut ChaCha8Rng) {
-        self.time += dt;
-        for c in &mut self.curtains {
-            c.phase += c.speed * dt * 60.0;
-            c.x += 0.015 * dt * 60.0;
-            if c.x > self.width as f32 + c.width { c.x = -c.width; }
+    fn draw_petal(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        petal: &Petal,
+        view: &HeadView,
+        layer_dim: f32,
+    ) {
+        let len = petal.length * (0.10 + 0.90 * view.bloom);
+        if len < 0.8 {
+            return;
         }
-        for s in &mut self.stars { s.twinkle_phase += s.twinkle_speed * dt * 60.0; }
-    }
-    fn draw(&mut self, buf: &mut Buffer, area: Rect) {
-        // Aurora curtains with color blending
-        for c in &self.curtains {
-            for y in 0..area.height {
-                let rel_y = y as f32;
-                let wave1 = (rel_y * 0.04 + c.phase).sin();
-                let wave2 = (rel_y * 0.07 + c.phase * 1.3).sin() * 0.5;
-                let combined = wave1 + wave2;
-                let curtain_x = (c.x + combined * c.width * 0.4) as i32;
-                let curtain_w = (c.width * (0.6 + combined.abs() * 0.4)) as i32;
 
-                for dx in -curtain_w..=curtain_w {
-                    let x = curtain_x + dx;
-                    if x >= 0 && x < area.width as i32 {
-                        let dist = dx.abs() as f32 / curtain_w as f32;
-                        let alpha = (1.0 - dist) * (0.08 + 0.12 * combined.abs()) * c.intensity;
-                        if alpha > 0.015 {
-                            // Blend colors based on wave
-                            let blend = (combined + 1.0) / 2.0;
-                            let (r, g, b) = lerp_color(c.color1, c.color2, blend);
-                            draw_char(buf, x, y as i32, area, if alpha > 0.05 { '░' } else { '▒' }, (r, g, b));
-                        }
-                    }
-                }
+        let steps = (len * 5.0).clamp(8.0, 90.0) as usize;
+        let mut previous: Option<(f32, f32, f32, (u8, u8, u8))> = None;
+
+        for i in 0..=steps {
+            let t = i as f32 / steps as f32;
+            let (x, y) = petal_point(petal, view, t, len, self.time);
+
+            // Thin at the base, full in the middle, pointed at the tip.
+            let profile = (std::f32::consts::PI * t).sin().powf(0.80);
+            let width = (petal.width * (0.26 + 0.74 * profile)).max(0.55);
+
+            let base_color = if t < 0.38 {
+                lerp_color(C_PETAL_DEEP, C_PETAL_MID, t / 0.38)
+            } else {
+                lerp_color(C_PETAL_MID, C_PETAL_TIP, (t - 0.38) / 0.62)
+            };
+            let color = tint(
+                mul_color(base_color, view.depth * layer_dim * view.breath),
+                view.red,
+                view.gb,
+            );
+
+            if let Some((px, py, pw, pc)) = previous {
+                draw_dot_line(
+                    buf,
+                    area,
+                    px * 2.0,
+                    py * 4.0,
+                    x * 2.0,
+                    y * 4.0,
+                    pw,
+                    width,
+                    pc,
+                    color,
+                );
+            } else {
+                stamp_disc(buf, area, x * 2.0, y * 4.0, width, color);
             }
+
+            previous = Some((x, y, width, color));
         }
-        // Stars
-        for s in &self.stars {
-            let x = s.x as i32; let y = s.y as i32;
-            if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                let twinkle = (s.twinkle_phase.sin() + 1.0) / 2.0;
-                let brightness = s.brightness * (0.4 + twinkle * 0.6);
-                if brightness > 0.2 {
-                    let ch = if brightness > 0.85 { '✦' } else if brightness > 0.65 { '⋆' } else if brightness > 0.4 { '·' } else { ' ' };
-                    if ch != ' ' {
-                        let (r, g, b) = s.color;
-                        let v = (255.0 * brightness) as u8;
-                        draw_char(buf, x, y, area, ch, (r.min(v), g.min(v), b.min(v)));
-                    }
-                }
-            }
-        }
-    }
-}
 
-// ============================================================================
-// THEME 6: KOI DREAMS (錦鯉の夢) - Koi fish in pond
-// ============================================================================
-
-#[derive(Clone, Copy)]
-enum KoiPattern { Kohaku, Sanke, Showa, Ogon, Utsuri }
-
-struct KoiFish {
-    x: f32, y: f32,
-    vx: f32, vy: f32,
-    angle: f32,
-    pattern: KoiPattern,
-    size: f32,
-    swim_phase: f32,
-    body_color: (u8, u8, u8),
-    spot_colors: &'static [(u8, u8, u8)],
-}
-
-struct WaterLily {
-    x: f32, y: f32,
-    bloom: f32, bloom_speed: f32,
-    color: (u8, u8, u8),
-    petals: usize,
-}
-
-struct Ripple {
-    x: f32, y: f32,
-    radius: f32, max_radius: f32,
-    life: f32,
-    alpha: f32,
-}
-
-const KOI_PATTERNS: &[(KoiPattern, (u8,u8,u8), &[(u8,u8,u8)])] = &[
-    (KoiPattern::Kohaku, (0xFF,0xFF,0xFF), &[(0xFF,0x00,0x00)]),
-    (KoiPattern::Sanke, (0xFF,0xFF,0xFF), &[(0xFF,0x00,0x00), (0x00,0x00,0x00)]),
-    (KoiPattern::Showa, (0x00,0x00,0x00), &[(0xFF,0x00,0x00), (0xFF,0xFF,0xFF)]),
-    (KoiPattern::Ogon, (0xFF,0xD7,0x00), &[]),
-    (KoiPattern::Utsuri, (0x00,0x00,0x00), &[(0xFF,0xFF,0xFF)]),
-];
-
-struct KoiDreams {
-    koi: Vec<KoiFish>,
-    lilies: Vec<WaterLily>,
-    ripples: Vec<Ripple>,
-    time: f32,
-    width: u16, height: u16,
-}
-
-impl KoiDreams {
-    fn new() -> Self { Self { koi: Vec::new(), lilies: Vec::new(), ripples: Vec::new(), time: 0.0, width: 0, height: 0 } }
-    fn spawn(&mut self, width: u16, height: u16, rng: &mut ChaCha8Rng) {
-        self.koi.clear(); self.lilies.clear(); self.ripples.clear();
-        for _ in 0..((width * height) as f32 / 10000.0).clamp(2.0, 5.0) as usize {
-            let (pattern, body, spots) = *KOI_PATTERNS.choose(rng).unwrap();
-            self.koi.push(KoiFish {
-                x: rng.gen_range(15.0..(width - 15) as f32),
-                y: rng.gen_range(8.0..(height - 8) as f32),
-                vx: rng.gen_range(-0.25..0.25), vy: rng.gen_range(-0.08..0.08),
-                angle: rng.gen_range(0.0..std::f32::consts::TAU),
-                pattern, size: rng.gen_range(1.8..3.5), swim_phase: rng.gen_range(0.0..std::f32::consts::TAU),
-                body_color: body, spot_colors: spots,
-            });
-        }
-        for _ in 0..(width as f32 / 22.0).clamp(2.0, 7.0) as usize {
-            self.lilies.push(WaterLily {
-                x: rng.gen_range(8.0..(width - 8) as f32),
-                y: rng.gen_range(4.0..(height - 4) as f32),
-                bloom: rng.gen_range(0.2..0.8), bloom_speed: rng.gen_range(0.0005..0.0015),
-                color: *[(0xFF,0x69,0xB4), (0xFF,0xFF,0xFF), (0xFF,0xB6,0xC1), (0xE6,0xE6,0xFA), (0xFF,0xE4,0xE1)].choose(rng).unwrap(),
-                petals: rng.gen_range(6..10),
-            });
+        // A single warm spark at the very tip.
+        if view.bloom > 0.55 {
+            let (x, y) = petal_point(petal, view, 1.0, len, self.time);
+            let heat = ((view.bloom - 0.55) / 0.45).clamp(0.0, 1.0);
+            let color = mul_color(
+                C_PETAL_HOT,
+                view.depth * layer_dim * view.breath * heat,
+            );
+            stamp_disc(buf, area, x * 2.0, y * 4.0, 0.55, color);
         }
     }
-}
 
-impl Theme for KoiDreams {
-    fn name(&self) -> &'static str { "koi-dreams" }
-    fn description(&self) -> &'static str { "錦鯉の夢 - Koi fish gliding, water lilies blooming, gentle ripples" }
-    fn resize(&mut self, area: Rect) { self.width = area.width; self.height = area.height; let mut rng = new_rng(); self.spawn(area.width, area.height, &mut rng); }
-    fn update(&mut self, dt: f32, rng: &mut ChaCha8Rng) {
-        self.time += dt;
-        for k in &mut self.koi {
-            k.swim_phase += 0.025 * dt * 60.0;
-            k.angle += (k.swim_phase.sin() * 0.02 + k.vx * 0.5) * dt * 60.0;
-            k.x += k.angle.cos() * (0.8 + k.swim_phase.sin() * 0.15) * dt * 60.0;
-            k.y += k.angle.sin() * (0.8 + k.swim_phase.sin() * 0.15) * dt * 60.0 + k.vy * dt * 60.0;
+    fn draw_stamens(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        flower: &Flower,
+        view: &HeadView,
+    ) {
+        for stamen in &flower.stamens {
+            let len = stamen.length * (0.25 + 0.75 * view.bloom);
+            if len < 0.8 {
+                continue;
+            }
 
-            if k.x < 10.0 { k.x = 10.0; k.angle = 0.0; } if k.x > self.width as f32 - 10.0 { k.x = self.width as f32 - 10.0; k.angle = std::f32::consts::PI; }
-            if k.y < 5.0 { k.y = 5.0; k.vy = k.vy.abs(); } if k.y > self.height as f32 - 5.0 { k.y = self.height as f32 - 5.0; k.vy = -k.vy.abs(); }
+            let sway = (self.time * stamen.speed + stamen.phase).sin() * 0.05;
+            let steps = (len * 4.0).clamp(6.0, 70.0) as usize;
+            let mut previous: Option<(f32, f32)> = None;
 
-            if rng.gen::<f32>() < 0.0015 * dt * 60.0 {
-                self.ripples.push(Ripple { x: k.x, y: k.y, radius: 0.0, max_radius: rng.gen_range(6.0..18.0), life: 0.0, alpha: rng.gen_range(0.3..0.6) });
+            for i in 0..=steps {
+                let t = i as f32 / steps as f32;
+                let angle = stamen.angle + view.rot + stamen.curl * (t * 1.15).sin()
+                    + sway * t;
+                let radius = len * t;
+                let x = view.hx + angle.cos() * radius;
+                let y = view.hy + angle.sin() * radius * 0.52
+                    - stamen.recurve * t.powi(3) * len * 0.16;
+
+                if let Some((px, py)) = previous {
+                    let dim = mul_color(C_STAMEN, view.depth * view.breath * 0.45);
+                    let bright = mul_color(C_STAMEN, view.depth * view.breath * 0.85);
+                    let color = lerp_color(dim, bright, t);
+                    draw_dot_line(
+                        buf,
+                        area,
+                        px * 2.0,
+                        py * 4.0,
+                        x * 2.0,
+                        y * 4.0,
+                        0.30,
+                        0.30,
+                        color,
+                        color,
+                    );
+                }
+                previous = Some((x, y));
             }
-        }
-        for l in &mut self.lilies {
-            l.bloom += l.bloom_speed * dt * 60.0;
-            if l.bloom > 1.0 { l.bloom = 0.2; }
-        }
-        self.ripples.retain_mut(|r| { r.radius += 0.4 * dt * 60.0; r.life += dt; r.alpha *= 0.995; r.radius < r.max_radius && r.life < 12.0 });
-    }
-    fn draw(&mut self, buf: &mut Buffer, area: Rect) {
-        // Water lilies
-        for l in &self.lilies {
-            let x = l.x as i32; let y = l.y as i32;
-            if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                let (r, g, b) = l.color;
-                let alpha = l.bloom;
-                let petal_ch = if l.bloom > 0.7 { '✿' } else { '❀' };
-                for i in 0..l.petals {
-                    let angle = i as f32 * std::f32::consts::TAU / l.petals as f32;
-                    let px = x + (angle.cos() * (3.0 + l.bloom * 4.0)) as i32;
-                    let py = y + (angle.sin() * (2.0 + l.bloom * 3.0) * 0.6) as i32;
-                    if px >= 0 && px < area.width as i32 && py >= 0 && py < area.height as i32 {
-                        draw_char(buf, px, py, area, petal_ch, ((r as f32 * alpha) as u8, (g as f32 * alpha) as u8, (b as f32 * alpha) as u8));
-                    }
-                }
-                // Center
-                draw_char(buf, x, y, area, '✶', (0xFF, 0xD7, 0x00));
-            }
-        }
-        // Ripples
-        for r in &self.ripples {
-            let cx = r.x as i32; let cy = r.y as i32;
-            let rad = r.radius as i32;
-            let alpha = r.alpha * (1.0 - r.radius / r.max_radius);
-            if alpha < 0.02 { continue; }
-            for angle_step in 0..72 {
-                let angle = angle_step as f32 * std::f32::consts::TAU / 72.0;
-                let x = cx + (angle.cos() * rad as f32) as i32;
-                let y = cy + (angle.sin() * rad as f32 * 0.5) as i32;
-                if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 && DRAW_RNG.with(|rng| rng.borrow_mut().gen::<f32>()) < alpha * 0.4 {
-                    draw_char(buf, x, y, area, '∼', (0x00, (0xBF as f32 * alpha) as u8, (0xFF as f32 * alpha) as u8));
-                }
-            }
-        }
-        // Koi fish
-        for k in &self.koi {
-            let x = k.x as i32; let y = k.y as i32;
-            let sz = k.size as i32;
-            if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                // Body segments
-                for seg in 0..=sz {
-                    let seg_x = x + (k.angle.cos() * (sz - seg) as f32) as i32;
-                    let seg_y = y + (k.angle.sin() * (sz - seg) as f32 * 0.4) as i32;
-                    let seg_w = (sz - seg) / 2 + 1;
-                    for dx in -seg_w..=seg_w {
-                        let px = seg_x + dx;
-                        let py = seg_y;
-                        if px >= 0 && px < area.width as i32 && py >= 0 && py < area.height as i32 {
-                            let ch = if seg == 0 { '►' } else if seg == sz { '●' } else { '▬' };
-                            let (r, g, b) = k.body_color;
-                            draw_char(buf, px, py, area, ch, (r, g, b));
-                        }
-                    }
-                    // Spots
-                    if !k.spot_colors.is_empty() && seg % 2 == 0 && DRAW_RNG.with(|rng| rng.borrow_mut().gen::<f32>()) < 0.3 {
-                        for spot_color in k.spot_colors.iter() {
-                            let sx = seg_x + (k.angle.sin() * 2.0) as i32;
-                            let sy = seg_y;
-                            if sx >= 0 && sx < area.width as i32 && sy >= 0 && sy < area.height as i32 {
-                                draw_char(buf, sx, sy, area, '◆', *spot_color);
-                            }
-                        }
-                    }
-                }
-                // Tail
-                let tx = x - (k.angle.cos() * (sz + 2) as f32) as i32;
-                let ty = y - (k.angle.sin() * (sz + 1) as f32 * 0.4) as i32;
-                if tx >= 0 && tx < area.width as i32 && ty >= 0 && ty < area.height as i32 {
-                    draw_char(buf, tx, ty, area, '◁', k.body_color);
-                }
-                // Fins
-                let fx1 = x + (k.angle.cos() * (sz / 2) as f32 - k.angle.sin() * 3.0) as i32;
-                let fy1 = y + (k.angle.sin() * (sz / 2) as f32 + k.angle.cos() * 3.0 * 0.4) as i32;
-                if fx1 >= 0 && fx1 < area.width as i32 && fy1 >= 0 && fy1 < area.height as i32 {
-                    draw_char(buf, fx1, fy1, area, '△', k.body_color);
-                }
-            }
+
+            // Anther: a slow golden pulse with the faintest halo.
+            let angle =
+                stamen.angle + view.rot + stamen.curl * 1.15f32.sin() + sway;
+            let x = view.hx + angle.cos() * len;
+            let y = view.hy + angle.sin() * len * 0.52 - stamen.recurve * len * 0.16;
+            let pulse = 0.5 + 0.5 * (self.time * 0.45 + stamen.phase * 2.0).sin();
+
+            stamp_disc(
+                buf,
+                area,
+                x * 2.0,
+                y * 4.0,
+                1.4,
+                mul_color(C_ANTHER, view.depth * view.breath * 0.08),
+            );
+            stamp_disc(
+                buf,
+                area,
+                x * 2.0,
+                y * 4.0,
+                0.45 + pulse * 0.30,
+                mul_color(
+                    C_ANTHER,
+                    view.depth * view.breath * (0.55 + 0.35 * pulse),
+                ),
+            );
         }
     }
-}
 
-// ============================================================================
-// THEME 7: BAMBOO WHISPER (竹の囁き) - Bamboo forest
-// ============================================================================
+    fn draw_falling(&self, buf: &mut Buffer, area: Rect, breath: f32) {
+        for petal in &self.falling {
+            let life = (petal.life / petal.max_life).clamp(0.0, 1.0);
+            let alpha = (1.0 - life).powf(0.7);
+            let color = mul_color(C_FALLING, petal.depth * breath * alpha * 0.9);
 
-struct BambooStalk {
-    x: f32, y: f32,
-    height: usize, segments: usize,
-    sway_phase: f32, sway_speed: f32,
-    thickness: f32,
-    leaf_bunches: Vec<LeafBunch>,
-}
+            let len = 1.2 + petal.size * 1.5;
+            let dx = petal.angle.cos();
+            let dy = petal.angle.sin();
 
-struct LeafBunch {
-    segment: usize,
-    angle: f32,
-    length: f32,
-    leaves: usize,
-}
-
-struct BambooLeaf {
-    x: f32, y: f32,
-    vx: f32, vy: f32,
-    rotation: f32, rot_speed: f32,
-    life: f32,
-    char: char,
-    color: (u8, u8, u8),
-}
-
-const BAMBOO_COLORS: &[(u8, u8, u8)] = &[
-    (0x2E, 0x8B, 0x57), (0x3C, 0xB3, 0x71), (0x6B, 0x8E, 0x23),
-    (0x8F, 0xBC, 0x8F), (0x55, 0x6B, 0x2F), (0x4A, 0x7C, 0x59),
-];
-
-const LEAF_CHARS: &[char] = &['🍃', '🍂', '🌿', '🍀', '➤', '➥', '▸', '▹'];
-
-struct BambooWhisper {
-    bamboos: Vec<BambooStalk>,
-    leaves: Vec<BambooLeaf>,
-    time: f32,
-    width: u16, height: u16,
-}
-
-impl BambooWhisper {
-    fn new() -> Self { Self { bamboos: Vec::new(), leaves: Vec::new(), time: 0.0, width: 0, height: 0 } }
-    fn spawn(&mut self, width: u16, height: u16, rng: &mut ChaCha8Rng) {
-        self.bamboos.clear(); self.leaves.clear();
-        let count = (width as f32 / 20.0).clamp(3.0, 10.0) as usize;
-        let ground = height as f32 - 1.0;
-        for _ in 0..count {
-            let h = rng.gen_range(height as usize / 3..height as usize * 3 / 4);
-            let segs = (h / 4).max(3);
-            let mut bunches = Vec::new();
-            for b in 0..rng.gen_range(3..6) {
-                bunches.push(LeafBunch {
-                    segment: rng.gen_range(segs.saturating_sub(4)..segs),
-                    angle: rng.gen_range(-0.6..0.6),
-                    length: rng.gen_range(4.0..10.0),
-                    leaves: rng.gen_range(4..8),
-                });
-            }
-            self.bamboos.push(BambooStalk {
-                x: rng.gen_range(4.0..(width - 4) as f32), y: ground,
-                height: h, segments: segs,
-                sway_phase: rng.gen_range(0.0..std::f32::consts::TAU),
-                sway_speed: rng.gen_range(0.0008..0.0025),
-                thickness: rng.gen_range(0.8..1.5),
-                leaf_bunches: bunches,
-            });
-        }
-    }
-}
-
-impl Theme for BambooWhisper {
-    fn name(&self) -> &'static str { "bamboo-whisper" }
-    fn description(&self) -> &'static str { "竹の囁き - Bamboo forest swaying, leaves drifting down" }
-    fn resize(&mut self, area: Rect) { self.width = area.width; self.height = area.height; let mut rng = new_rng(); self.spawn(area.width, area.height, &mut rng); }
-    fn update(&mut self, dt: f32, rng: &mut ChaCha8Rng) {
-        self.time += dt;
-        for b in &mut self.bamboos {
-            b.sway_phase += b.sway_speed * dt * 60.0;
-            if rng.gen::<f32>() < 0.0003 * dt * 60.0 {
-                let bunch = b.leaf_bunches.choose(rng).unwrap();
-                let seg_y = b.y - (bunch.segment * b.height / b.segments) as f32;
-                self.leaves.push(BambooLeaf {
-                    x: b.x + (b.sway_phase.sin() * bunch.length * 0.5),
-                    y: seg_y,
-                    vx: rng.gen_range(-0.15..0.15), vy: rng.gen_range(0.08..0.25),
-                    rotation: rng.gen_range(0.0..std::f32::consts::TAU),
-                    rot_speed: rng.gen_range(-0.01..0.01),
-                    life: 0.0, char: *LEAF_CHARS.choose(rng).unwrap(),
-                    color: *BAMBOO_COLORS.choose(rng).unwrap(),
-                });
-            }
-        }
-        self.leaves.retain_mut(|l| {
-            l.x += l.vx * dt * 60.0; l.y += l.vy * dt * 60.0;
-            l.rotation += l.rot_speed * dt * 60.0; l.life += dt;
-            l.life < 18.0 && l.y < self.height as f32 + 2.0
-        });
-    }
-    fn draw(&mut self, buf: &mut Buffer, area: Rect) {
-        for b in &self.bamboos {
-            let sway = (b.sway_phase.sin() * 2.5) as i32;
-            let bx = b.x as i32 + sway;
-            let by = b.y as i32;
-            let seg_h = (b.height / b.segments.max(1)) as i32;
-            let segs = b.segments as i32;
-
-            // Stalk segments
-            for seg in 0..segs {
-                let y = by - seg * seg_h;
-                let x = bx + sway * seg / segs;
-                for i in 0..seg_h {
-                    let sy = y - i;
-                    if sy >= 0 && sy < area.height as i32 && x >= 0 && x < area.width as i32 {
-                        draw_char(buf, x, sy, area, '│', BAMBOO_COLORS[0]);
-                    }
-                }
-                // Node ring
-                if y >= 0 && y < area.height as i32 && x >= 0 && x < area.width as i32 {
-                    draw_char(buf, x, y, area, '┼', BAMBOO_COLORS[1]);
-                }
-            }
-
-            // Leaf bunches at top
-            for bunch in &b.leaf_bunches {
-                let seg_y = by - bunch.segment as i32 * seg_h;
-                let seg_x = bx + sway * (bunch.segment as i32) / segs;
-                let bunch_leaves = bunch.leaves as i32;
-                    for side in [-1, 1] {
-                        for l in 0..bunch_leaves {
-                            let lx = seg_x + side * (l + (bunch.length as i32 * l / bunch_leaves) / 2);
-                            let ly = seg_y - l - (bunch.length as i32 * l / bunch_leaves) / 3;
-                        if lx >= 0 && lx < area.width as i32 && ly >= 0 && ly < area.height as i32 {
-                            draw_char(buf, lx, ly, area, if side < 0 { '╴' } else { '╶' }, BAMBOO_COLORS[2]);
-                        }
-                    }
-                }
-            }
-        }
-        // Falling leaves
-        for l in &self.leaves {
-            let x = l.x as i32; let y = l.y as i32;
-            if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                let alpha = 1.0 - (l.life / 18.0).min(1.0);
-                let sway_x = (l.rotation.sin() * 0.8) as i32;
-                draw_char(buf, x + sway_x, y, area, l.char, ((l.color.0 as f32 * alpha) as u8, (l.color.1 as f32 * alpha) as u8, (l.color.2 as f32 * alpha) as u8));
-            }
-        }
-    }
-}
-
-// ============================================================================
-// THEME 8: NEBULA HEART (星雲の心臓) - Cosmic nebula
-// ============================================================================
-
-struct NebulaParticle {
-    x: f32, y: f32, vx: f32, vy: f32,
-    color: (u8, u8, u8), life: f32, size: f32,
-    orbit_angle: f32, orbit_speed: f32,
-}
-
-struct NebulaCore {
-    x: f32, y: f32, vx: f32, vy: f32,
-    radius: f32, color: (u8, u8, u8),
-    pulse_phase: f32, pulse_speed: f32,
-    rotation: f32,
-}
-
-const NEBULA_COLORS: &[(u8, u8, u8)] = &[
-    (0xFF, 0x00, 0xFF), (0x00, 0xFF, 0xFF), (0xFF, 0xFF, 0x00),
-    (0xFF, 0x00, 0x7F), (0xBF, 0x00, 0xFF), (0x00, 0xFF, 0xBF),
-];
-
-struct NebulaHeart {
-    particles: Vec<NebulaParticle>,
-    cores: Vec<NebulaCore>,
-    time: f32,
-    width: u16, height: u16,
-}
-
-impl NebulaHeart {
-    fn new() -> Self { Self { particles: Vec::new(), cores: Vec::new(), time: 0.0, width: 0, height: 0 } }
-    fn spawn(&mut self, width: u16, height: u16, rng: &mut ChaCha8Rng) {
-        self.particles.clear(); self.cores.clear();
-        for _ in 0..4 {
-            self.cores.push(NebulaCore {
-                x: rng.gen_range(width as f32 * 0.15..width as f32 * 0.85),
-                y: rng.gen_range(height as f32 * 0.15..height as f32 * 0.85),
-                vx: rng.gen_range(-0.04..0.04), vy: rng.gen_range(-0.04..0.04),
-                radius: rng.gen_range(18.0..35.0),
-                color: *NEBULA_COLORS.choose(rng).unwrap(),
-                pulse_phase: rng.gen_range(0.0..std::f32::consts::TAU),
-                pulse_speed: rng.gen_range(0.008..0.025),
-                rotation: rng.gen_range(0.0..std::f32::consts::TAU),
-            });
-        }
-        for _ in 0..((width * height) as f32 / 180.0).clamp(120.0, 600.0) as usize {
-            let core = self.cores.choose(rng).unwrap();
-            let angle = rng.gen_range(0.0..std::f32::consts::TAU);
-            let dist = rng.gen_range(0.0..core.radius * 0.8);
-            self.particles.push(NebulaParticle {
-                x: core.x + angle.cos() * dist, y: core.y + angle.sin() * dist,
-                vx: 0.0, vy: 0.0, color: core.color,
-                life: rng.gen_range(0.0..25.0), size: rng.gen_range(0.4..1.8),
-                orbit_angle: angle, orbit_speed: rng.gen_range(0.002..0.008),
-            });
-        }
-    }
-}
-
-impl Theme for NebulaHeart {
-    fn name(&self) -> &'static str { "nebula-heart" }
-    fn description(&self) -> &'static str { "星雲の心臓 - Nebula cores pulsing, particles swirling in cosmic dance" }
-    fn resize(&mut self, area: Rect) { self.width = area.width; self.height = area.height; let mut rng = new_rng(); self.spawn(area.width, area.height, &mut rng); }
-    fn update(&mut self, dt: f32, rng: &mut ChaCha8Rng) {
-        self.time += dt;
-        for c in &mut self.cores {
-            c.pulse_phase += c.pulse_speed * dt * 60.0;
-            c.rotation += 0.002 * dt * 60.0;
-            c.x += c.vx * dt * 60.0; c.y += c.vy * dt * 60.0;
-            if c.x < c.radius { c.x = c.radius; c.vx = c.vx.abs(); }
-            if c.x > self.width as f32 - c.radius { c.x = self.width as f32 - c.radius; c.vx = -c.vx.abs(); }
-            if c.y < c.radius { c.y = c.radius; c.vy = c.vy.abs(); }
-            if c.y > self.height as f32 - c.radius { c.y = self.height as f32 - c.radius; c.vy = -c.vy.abs(); }
-        }
-        for p in &mut self.particles {
-            let mut nearest = &self.cores[0]; let mut md = f32::MAX;
-            for c in &self.cores { let dx = p.x - c.x; let dy = p.y - c.y; let d = dx*dx+dy*dy; if d < md { md = d; nearest = c; } }
-            let dx = nearest.x - p.x; let dy = nearest.y - p.y;
-            let dist = (dx*dx + dy*dy).sqrt().max(1.0);
-            // Orbital motion
-            p.orbit_angle += p.orbit_speed * dt * 60.0;
-            let target_x = nearest.x + p.orbit_angle.cos() * (nearest.radius * 0.7);
-            let target_y = nearest.y + p.orbit_angle.sin() * (nearest.radius * 0.7) * 0.6;
-            p.vx += (target_x - p.x) * 0.02 * dt * 60.0;
-            p.vy += (target_y - p.y) * 0.02 * dt * 60.0;
-            p.vx *= 0.98; p.vy *= 0.98;
-            p.x += p.vx * dt * 60.0; p.y += p.vy * dt * 60.0;
-            p.life += dt;
-            if p.life > 35.0 || (p.x - nearest.x).abs() > nearest.radius * 1.8 || (p.y - nearest.y).abs() > nearest.radius * 1.8 {
-                let angle = rng.gen_range(0.0..std::f32::consts::TAU);
-                let dist = rng.gen_range(0.0..nearest.radius * 0.7);
-                p.x = nearest.x + angle.cos() * dist; p.y = nearest.y + angle.sin() * dist;
-                p.vx = 0.0; p.vy = 0.0; p.life = 0.0; p.orbit_angle = angle;
-            }
-        }
-    }
-    fn draw(&mut self, buf: &mut Buffer, area: Rect) {
-        // Particles
-        for p in &self.particles {
-            let x = p.x as i32; let y = p.y as i32;
-            if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                let (r, g, b) = p.color;
-                let alpha = (1.0 - (p.life / 35.0).min(1.0)) * p.size;
-                let ch = if p.size > 1.4 { '✦' } else if p.size > 1.0 { '⋆' } else if p.size > 0.7 { '·' } else { '░' };
-                draw_char(buf, x, y, area, ch, ((r as f32 * alpha) as u8, (g as f32 * alpha) as u8, (b as f32 * alpha) as u8));
-            }
-        }
-        // Cores with pulsating glow
-        for c in &self.cores {
-            let cx = c.x as i32; let cy = c.y as i32;
-            let rad = c.radius as i32;
-            let pulse = (c.pulse_phase.sin() + 1.0) / 2.0;
-            let (r, g, b) = c.color;
-            // Outer glow
-            for dy in -rad..=rad {
-                let w = ((rad * rad - dy * dy) as f32).sqrt() as i32;
-                for dx in -w..=w {
-                    let x = cx + dx; let y = cy + dy;
-                    if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                        let dist = (dx*dx + dy*dy) as f32 / (rad*rad) as f32;
-                        let alpha = (1.0 - dist.sqrt()) * pulse * 0.25;
-                        if alpha > 0.015 { draw_char(buf, x, y, area, '░', ((r as f32 * alpha) as u8, (g as f32 * alpha) as u8, (b as f32 * alpha) as u8)); }
-                    }
-                }
-            }
-            // Core center with rotation
-            for i in 0..6 {
-                let angle = c.rotation + i as f32 * std::f32::consts::TAU / 6.0;
-                for step in 1..=rad / 3 {
-                    let x = cx + (angle.cos() * step as f32) as i32;
-                    let y = cy + (angle.sin() * step as f32 * 0.5) as i32;
-                    if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                        draw_char(buf, x, y, area, '✶', (r, g, b));
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ============================================================================
-// THEME 9: RAIN GLASS (雨のガラス) - Rain on window
-// ============================================================================
-
-struct RainDrop {
-    x: f32, y: f32, vy: f32,
-    size: f32, trail: f32,
-    wobble: f32,
-}
-
-struct RainStream {
-    x: f32, y: f32,
-    length: f32, speed: f32, alpha: f32,
-    wobble_phase: f32,
-}
-
-struct RainGlass {
-    drops: Vec<RainDrop>,
-    streams: Vec<RainStream>,
-    condensation: Vec<(f32, f32, f32)>, // x, y, size
-    time: f32,
-    width: u16, height: u16,
-}
-
-impl RainGlass {
-    fn new() -> Self { Self { drops: Vec::new(), streams: Vec::new(), condensation: Vec::new(), time: 0.0, width: 0, height: 0 } }
-    fn spawn(&mut self, width: u16, height: u16, rng: &mut ChaCha8Rng) {
-        self.drops.clear(); self.streams.clear(); self.condensation.clear();
-        for _ in 0..((width * height) as f32 / 700.0).clamp(25.0, 120.0) as usize {
-            self.drops.push(RainDrop {
-                x: rng.gen_range(0.0..width as f32), y: rng.gen_range(-30.0..height as f32),
-                vy: rng.gen_range(2.5..7.0), size: rng.gen_range(0.4..1.8),
-                trail: rng.gen_range(4.0..14.0), wobble: rng.gen_range(0.0..std::f32::consts::TAU),
-            });
-        }
-        // Condensation droplets
-        for _ in 0..(width * height / 2000).clamp(15, 80) {
-            self.condensation.push((
-                rng.gen_range(0.0..width as f32),
-                rng.gen_range(0.0..height as f32),
-                rng.gen_range(0.3..1.0),
-            ));
-        }
-    }
-}
-
-impl Theme for RainGlass {
-    fn name(&self) -> &'static str { "rain-glass" }
-    fn description(&self) -> &'static str { "雨のガラス - Rain drops sliding down glass, streams merging, condensation" }
-    fn resize(&mut self, area: Rect) { self.width = area.width; self.height = area.height; let mut rng = new_rng(); self.spawn(area.width, area.height, &mut rng); }
-    fn update(&mut self, dt: f32, rng: &mut ChaCha8Rng) {
-        self.time += dt;
-        for d in &mut self.drops {
-            d.y += d.vy * dt * 60.0; d.wobble += 0.05 * dt * 60.0;
-            if rng.gen::<f32>() < 0.008 * dt * 60.0 && d.y > 8.0 {
-                self.streams.push(RainStream { x: d.x + d.wobble.sin() * 0.5, y: d.y,
-                    length: rng.gen_range(6.0..22.0), speed: rng.gen_range(1.5..4.0),
-                    alpha: rng.gen_range(0.25..0.7), wobble_phase: rng.gen_range(0.0..std::f32::consts::TAU) });
-            }
-            if d.y > self.height as f32 + 8.0 {
-                d.x = rng.gen_range(0.0..self.width as f32); d.y = rng.gen_range(-30.0..0.0);
-                d.vy = rng.gen_range(2.5..7.0); d.size = rng.gen_range(0.4..1.8);
-                d.trail = rng.gen_range(4.0..14.0); d.wobble = rng.gen_range(0.0..std::f32::consts::TAU);
-            }
-        }
-        self.streams.retain_mut(|s| { s.y += s.speed * dt * 60.0; s.wobble_phase += 0.03 * dt * 60.0; s.alpha -= 0.004 * dt * 60.0; s.alpha > 0.04 && s.y < self.height as f32 + 12.0 });
-    }
-    fn draw(&mut self, buf: &mut Buffer, area: Rect) {
-        // Condensation
-        for &(x, y, sz) in &self.condensation {
-            let xi = x as i32; let yi = y as i32;
-            if xi >= 0 && xi < area.width as i32 && yi >= 0 && yi < area.height as i32 {
-                let ch = if sz > 0.7 { '○' } else if sz > 0.4 { '·' } else { '░' };
-                draw_char(buf, xi, yi, area, ch, (0xB0, 0xC4, 0xDE));
-            }
-        }
-        // Streams
-        for s in &self.streams {
-            let x = s.x as i32; let len = s.length as i32;
-            for i in 0..len {
-                let wobble = (s.wobble_phase + i as f32 * 0.1).sin() * 0.5;
-                let xi = x + wobble as i32;
-                let yi = (s.y - i as f32) as i32;
-                if xi >= 0 && xi < area.width as i32 && yi >= 0 && yi < area.height as i32 {
-                    let alpha = s.alpha * (1.0 - i as f32 / len as f32);
-                    if alpha > 0.04 {
-                        draw_char(buf, xi, yi, area, '│', ((0x87 as f32 * alpha) as u8, (0xCE as f32 * alpha) as u8, (0xEB as f32 * alpha) as u8));
-                    }
-                }
-            }
-        }
-        // Drops with trails
-        for d in &self.drops {
-            let x = d.x as i32; let y = d.y as i32;
-            let tr = d.trail as i32;
-            for i in 0..=tr {
-                let ty = y - i;
-                let wobble = (d.wobble + i as f32 * 0.08).sin() * 0.3;
-                let xi = x + wobble as i32;
-                if xi >= 0 && xi < area.width as i32 && ty >= 0 && ty < area.height as i32 {
-                    let alpha = 1.0 - i as f32 / tr as f32;
-                    let ch = if i == 0 { '●' } else if i == 1 { '○' } else if i < 3 { '·' } else { '░' };
-                    draw_char(buf, xi, ty, area, ch, ((0x87 as f32 * alpha * 0.8) as u8, (0xCE as f32 * alpha * 0.8) as u8, (0xEB as f32 * alpha * 0.8) as u8));
-                }
-            }
-            // Impact splash at bottom
-            if (y as f32) > self.height as f32 - 3.0 {
-                for _ in 0..2 {
-                    let sx = x + DRAW_RNG.with(|rng| rng.borrow_mut().gen_range(-2..3));
-                    let sy = self.height as i32 - 1 - DRAW_RNG.with(|rng| rng.borrow_mut().gen_range(0..2));
-                    if sx >= 0 && sx < area.width as i32 {
-                        draw_char(buf, sx, sy, area, '⋆', (0x87, 0xCE, 0xEB));
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ============================================================================
-// THEME 10: WILLOW TEARS (垂柳の涙) - Weeping willow
-// ============================================================================
-
-struct WillowTree {
-    x: f32, y: f32,
-    trunk_h: usize,
-    branches: Vec<WillowBranch>,
-    sway_phase: f32, sway_speed: f32,
-}
-
-struct WillowBranch {
-    attach_y: f32,
-    base_angle: f32,
-    length: f32,
-    segments: usize,
-    leaves: Vec<WillowLeaf>,
-}
-
-struct WillowLeaf {
-    x: f32, y: f32,
-    vx: f32, vy: f32,
-    sway: f32, sway_speed: f32,
-    life: f32,
-    char: char,
-    color: (u8, u8, u8),
-}
-
-const WILLOW_COLORS: &[(u8, u8, u8)] = &[
-    (0x6B, 0x8E, 0x23), (0x55, 0x6B, 0x2F), (0x8F, 0xBC, 0x8F),
-    (0x9A, 0xCD, 0x32), (0x4A, 0x7C, 0x59), (0x7C, 0x9E, 0x4A),
-];
-
-const WILLOW_LEAF_CHARS: &[char] = &['🍃', '🍂', '🌿', '🍀', '➤', '▸', '▹', '➥'];
-
-struct WillowTears {
-    willows: Vec<WillowTree>,
-    leaves: Vec<WillowLeaf>,
-    time: f32,
-    width: u16, height: u16,
-}
-
-impl WillowTears {
-    fn new() -> Self { Self { willows: Vec::new(), leaves: Vec::new(), time: 0.0, width: 0, height: 0 } }
-    fn spawn(&mut self, width: u16, height: u16, rng: &mut ChaCha8Rng) {
-        self.willows.clear(); self.leaves.clear();
-        let count = (width as f32 / 35.0).clamp(1.0, 3.0) as usize;
-        let ground = height as f32 - 1.0;
-        for _ in 0..count {
-            let h = rng.gen_range(height as usize / 3..height as usize * 2 / 3);
-            let mut branches = Vec::new();
-            for b in 0..rng.gen_range(8..14) {
-                let mut leaves = Vec::new();
-                for _ in 0..rng.gen_range(6..12) {
-                    leaves.push(WillowLeaf {
-                        x: 0.0, y: 0.0, vx: 0.0, vy: 0.0,
-                        sway: 0.0, sway_speed: 0.0, life: 0.0,
-                        char: ' ', color: (0,0,0),
-                    });
-                }
-                branches.push(WillowBranch {
-                    attach_y: ground - h as f32 / 3.0 - b as f32 * 2.5,
-                    base_angle: rng.gen_range(-0.4..0.4),
-                    length: rng.gen_range(12.0..22.0),
-                    segments: rng.gen_range(15..25),
-                    leaves,
-                });
-            }
-            self.willows.push(WillowTree {
-                x: rng.gen_range(15.0..(width - 15) as f32), y: ground,
-                trunk_h: h / 3, branches,
-                sway_phase: rng.gen_range(0.0..std::f32::consts::TAU),
-                sway_speed: rng.gen_range(0.0004..0.0012),
-            });
-        }
-    }
-}
-
-impl Theme for WillowTears {
-    fn name(&self) -> &'static str { "willow-tears" }
-    fn description(&self) -> &'static str { "垂柳の涙 - Weeping willow branches swaying, leaves falling like tears" }
-    fn resize(&mut self, area: Rect) { self.width = area.width; self.height = area.height; let mut rng = new_rng(); self.spawn(area.width, area.height, &mut rng); }
-    fn update(&mut self, dt: f32, rng: &mut ChaCha8Rng) {
-        self.time += dt;
-        for w in &mut self.willows {
-            w.sway_phase += w.sway_speed * dt * 60.0;
-            // Drop leaves from branch tips
-            if rng.gen::<f32>() < 0.0015 * dt * 60.0 {
-                let branch = w.branches.choose(rng).unwrap();
-                self.leaves.push(WillowLeaf {
-                    x: w.x + (w.sway_phase.sin() * branch.length * 0.6),
-                    y: branch.attach_y - branch.length * 0.9,
-                    vx: rng.gen_range(-0.25..0.25), vy: rng.gen_range(0.15..0.45),
-                    sway: rng.gen_range(0.0..std::f32::consts::TAU),
-                    sway_speed: rng.gen_range(0.02..0.05),
-                    life: 0.0, char: *WILLOW_LEAF_CHARS.choose(rng).unwrap(),
-                    color: *WILLOW_COLORS.choose(rng).unwrap(),
-                });
-            }
-        }
-        self.leaves.retain_mut(|l| {
-            l.x += l.vx * dt * 60.0; l.y += l.vy * dt * 60.0;
-            l.sway += l.sway_speed * dt * 60.0; l.life += dt;
-            l.life < 22.0 && l.y < self.height as f32 + 3.0
-        });
-    }
-    fn draw(&mut self, buf: &mut Buffer, area: Rect) {
-        for w in &self.willows {
-            let sway = (w.sway_phase.sin() * 1.8) as i32;
-            let bx = w.x as i32 + sway;
-            let by = w.y as i32;
-
-            // Trunk
-            for i in 0..w.trunk_h {
-                let y = by - i as i32; let x = bx + sway * (i as i32) / w.trunk_h as i32;
-                if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                    draw_char(buf, x, y, area, '│', WILLOW_COLORS[4]);
-                }
-            }
-
-            // Weeping branches
-            for branch in &w.branches {
-                let branch_y = branch.attach_y as i32;
-                for seg in 0..branch.segments {
-                    let t = seg as f32 / branch.segments as f32;
-                    let curve = (t * std::f32::consts::PI).sin();
-                    let seg_x = bx + sway + (branch.base_angle.cos() * branch.length * t + curve * 3.0) as i32;
-                    let seg_y = branch_y - (branch.length * t * 0.7) as i32;
-                    let sway_add = (w.sway_phase.sin() * (branch.length * t * 0.3)) as i32;
-
-                    if seg_x >= 0 && seg_x < area.width as i32 && seg_y >= 0 && seg_y < area.height as i32 {
-                        let ch = if t < 0.3 { '·' } else if t < 0.7 { '╴' } else { '╶' };
-                        draw_char(buf, seg_x + sway_add, seg_y, area, ch, WILLOW_COLORS[seg % WILLOW_COLORS.len()]);
-                    }
-                }
-                // Leaves along branch
-                for leaf in &branch.leaves {
-                    let t = DRAW_RNG.with(|rng| rng.borrow_mut().gen::<f32>());
-                    let lx = bx + sway + (branch.base_angle.cos() * branch.length * t + (t * std::f32::consts::PI).sin() * 3.0) as i32;
-                    let ly = branch_y - (branch.length * t * 0.7) as i32;
-                    if lx >= 0 && lx < area.width as i32 && ly >= 0 && ly < area.height as i32 && DRAW_RNG.with(|rng| rng.borrow_mut().gen::<f32>()) < 0.4 {
-                        draw_char(buf, lx, ly, area, '🍃', WILLOW_COLORS[0]);
-                    }
-                }
-            }
-        }
-        // Falling leaves (tears)
-        for l in &self.leaves {
-            let x = l.x as i32; let y = l.y as i32;
-            if x >= 0 && x < area.width as i32 && y >= 0 && y < area.height as i32 {
-                let alpha = 1.0 - (l.life / 22.0).min(1.0);
-                let sway_x = (l.sway.sin() * 0.6) as i32;
-                draw_char(buf, x + sway_x, y, area, l.char, ((l.color.0 as f32 * alpha) as u8, (l.color.1 as f32 * alpha) as u8, (l.color.2 as f32 * alpha) as u8));
+            for k in 0..3 {
+                let offset = (k as f32 / 2.0 - 0.5) * len;
+                stamp_disc(
+                    buf,
+                    area,
+                    petal.x * 2.0 + dx * offset,
+                    petal.y * 4.0 + dy * offset,
+                    0.5,
+                    color,
+                );
             }
         }
     }

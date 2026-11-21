@@ -41,24 +41,7 @@ impl Background {
         self.registry.current_mut().draw(buf, area);
     }
 
-    // Theme management
     pub fn current_theme_name(&self) -> &'static str {
         self.registry.current_name()
-    }
-
-    pub fn set_theme(&mut self, name: &str) -> bool {
-        self.registry.set_theme(name)
-    }
-
-    pub fn next_theme(&mut self) {
-        self.registry.next_theme();
-    }
-
-    pub fn prev_theme(&mut self) {
-        self.registry.prev_theme();
-    }
-
-    pub fn list_themes(&self) -> Vec<(&'static str, &'static str)> {
-        self.registry.list_themes()
     }
 }

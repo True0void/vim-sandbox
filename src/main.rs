@@ -39,17 +39,6 @@ async fn main() -> Result<()> {
     let size = terminal.size()?;
     let mut background = Background::new(ratatui::layout::Rect::new(0, 0, size.width, size.height));
 
-    // Setup theme tab completion callback (static list)
-    let theme_names = vec![
-        "spider-lily", "sakura-night", "abyssal-bloom", "firefly-dusk", "aurora-void",
-        "koi-dreams", "bamboo-whisper", "nebula-heart", "rain-glass", "willow-tears"
-    ];
-    editor.set_theme_complete_callback(move |prefix| {
-        theme_names.iter()
-            .find(|name| name.starts_with(prefix))
-            .map(|name| name.to_string())
-    });
-
     // If a file was passed as argument, open it
     if let Some(file) = std::env::args().nth(1) {
         let _ = editor.open_file(&file);
@@ -87,9 +76,6 @@ async fn run_app(
                 if editor.status_msg() == "QUIT_REQUESTED" {
                     break;
                 }
-                
-                // Handle theme commands from status messages
-                handle_theme_status(editor, background);
             }
             // Input events
             Some(Ok(event)) = event_stream.next() => {
@@ -108,33 +94,4 @@ async fn run_app(
         }
     }
     Ok(())
-}
-
-fn handle_theme_status(editor: &mut Editor, background: &mut Background) {
-    let status = editor.status_msg();
-    
-    if status == "THEME_GET_CURRENT" {
-        editor.set_status(format!("Current theme: {}", background.current_theme_name()));
-    } else if status.starts_with("THEME_SET:") {
-        let name = &status["THEME_SET:".len()..];
-        if background.set_theme(name) {
-            editor.set_status(format!("Theme changed to: {}", name));
-        } else {
-            editor.set_status(format!("Unknown theme: {} (use :themes to list)", name));
-        }
-    } else if status == "THEME_LIST" {
-        let list = background.list_themes();
-        let mut msg = String::from("Available themes: ");
-        for (i, (name, _)) in list.iter().enumerate() {
-            if i > 0 { msg.push_str(", "); }
-            msg.push_str(name);
-        }
-        editor.set_status(msg);
-    } else if status == "THEME_NEXT" {
-        background.next_theme();
-        editor.set_status(format!("Theme: {}", background.current_theme_name()));
-    } else if status == "THEME_PREV" {
-        background.prev_theme();
-        editor.set_status(format!("Theme: {}", background.current_theme_name()));
-    }
 }
