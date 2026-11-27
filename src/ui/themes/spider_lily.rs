@@ -20,10 +20,9 @@
 //!     `depth`, which keeps the far flowers down to a few strokes per petal.
 
 use super::{
-    draw_dot_line, hash, lerp_color, mul_color, plot_dot, smoothstep, stamp_disc,
-    stamp_disc_force, tint, C_ANTHER, C_DEEP_BG, C_FALLING, C_GLOW, C_MOSS, C_MOSS_LIGHT,
-    C_PETAL_DEEP, C_PETAL_HOT, C_PETAL_MID, C_PETAL_TIP, C_STAMEN, C_STEM_DARK, C_STEM_LIGHT,
-    TAU,
+    draw_dot_line, hash, lerp_color, mul_color, plot_dot, smoothstep, stamp_disc, stamp_disc_force,
+    tint, C_ANTHER, C_DEEP_BG, C_FALLING, C_GLOW, C_MOSS, C_MOSS_LIGHT, C_PETAL_DEEP, C_PETAL_HOT,
+    C_PETAL_MID, C_PETAL_TIP, C_STAMEN, C_STEM_DARK, C_STEM_LIGHT, TAU,
 };
 use crate::ui::themes::Theme;
 use rand::Rng;
@@ -82,11 +81,7 @@ impl Palette {
             0.08 + warm * 0.60,
         );
         let hot = lerp_color(C_PETAL_HOT, C_ANTHER, 0.10 + warm * 0.38);
-        let glow = lerp_color(
-            tint(C_GLOW, 0.85, 1.30),
-            tint(C_GLOW, 1.35, 0.72),
-            warm,
-        );
+        let glow = lerp_color(tint(C_GLOW, 0.85, 1.30), tint(C_GLOW, 1.35, 0.72), warm);
         let vein = lerp_color(mid, hot, 0.42);
         let anther = lerp_color(C_ANTHER, C_PETAL_TIP, 0.34 * (1.0 - warm));
         let stem_lo = lerp_color(C_STEM_DARK, tint(C_STEM_DARK, 1.28, 0.82), warm * 0.55);
@@ -290,11 +285,7 @@ impl Ground {
             }
         }
 
-        Self {
-            width,
-            moss,
-            tufts,
-        }
+        Self { width, moss, tufts }
     }
 }
 
@@ -588,10 +579,7 @@ fn petal_point(petal: &Petal, view: &HeadView, t: f32, len: f32, ctx: &Ctx) -> (
     let base_angle = petal.angle + view.rot;
     let bend = petal.curl * t * t * 1.20;
     // Flutter grows with the gust: a still night barely moves the petals.
-    let wave = (t * 6.5 + petal.phase + ctx.time * 0.35).sin()
-        * 0.045
-        * t
-        * (1.0 + 1.6 * ctx.gust);
+    let wave = (t * 6.5 + petal.phase + ctx.time * 0.35).sin() * 0.045 * t * (1.0 + 1.6 * ctx.gust);
     // Wilting petals fold inward and sag.
     let sag = view.droop * t * t * 0.85 * petal.twist;
     let angle = base_angle + bend + wave + sag;
@@ -693,8 +681,8 @@ impl Theme for SpiderLily {
             } else if t < flower.bloom_time + flower.hold_time {
                 1.0
             } else {
-                let u = ((t - flower.bloom_time - flower.hold_time) / flower.wilt_time)
-                    .clamp(0.0, 1.0);
+                let u =
+                    ((t - flower.bloom_time - flower.hold_time) / flower.wilt_time).clamp(0.0, 1.0);
                 1.0 - smoothstep(u)
             };
             flower.bloom = bloom;
@@ -852,8 +840,8 @@ impl SpiderLily {
 
         // Grass blades bend with the same wind field as the stems.
         for tuft in &self.ground.tufts {
-            let sway = (ctx.time * 0.33 + tuft.phase).sin() * tuft.lean
-                + ctx.wind * tuft.blade * 0.55;
+            let sway =
+                (ctx.time * 0.33 + tuft.phase).sin() * tuft.lean + ctx.wind * tuft.blade * 0.55;
             let tip = if tuft.bright { C_MOSS_LIGHT } else { C_MOSS };
             draw_dot_line(
                 buf,
@@ -1032,7 +1020,11 @@ impl SpiderLily {
             + ctx.wind * 0.06;
 
         if flower.bloom < 0.015 {
-            self.draw_bud(buf, area, hx, hy, flower, ctx);
+            // A flower that has already wilted must not reopen as a bud: by
+            // then the head is bare and the last petals are on their way down.
+            if flower.wilt < 0.45 {
+                self.draw_bud(buf, area, hx, hy, flower, ctx);
+            }
             return;
         }
 
@@ -1059,7 +1051,10 @@ impl SpiderLily {
 
         // Heart: forced dark so the petals always read as radiating out of a
         // hole rather than a blob.
-        let core = mul_color(atmos(view.pal.deep, view.depth), view.dim * view.bloom * 0.85);
+        let core = mul_color(
+            atmos(view.pal.deep, view.depth),
+            view.dim * view.bloom * 0.85,
+        );
         stamp_disc_force(
             buf,
             area,
@@ -1091,15 +1086,7 @@ impl SpiderLily {
         self.draw_flower_glint(buf, area, flower, &view, ctx);
     }
 
-    fn draw_bud(
-        &self,
-        buf: &mut Buffer,
-        area: Rect,
-        hx: f32,
-        hy: f32,
-        flower: &Flower,
-        ctx: &Ctx,
-    ) {
+    fn draw_bud(&self, buf: &mut Buffer, area: Rect, hx: f32, hy: f32, flower: &Flower, ctx: &Ctx) {
         let pal = Palette::new(flower.hue);
         let depth = flower.depth * ctx.breath;
         let dark = atmos(mul_color(pal.deep, depth * 0.85), flower.depth);
@@ -1140,14 +1127,7 @@ impl SpiderLily {
     }
 
     /// Soft elliptical halo. Kept to a few discs: it is atmosphere, not light.
-    fn draw_aura(
-        &self,
-        buf: &mut Buffer,
-        area: Rect,
-        view: &HeadView,
-        phase: f32,
-        ctx: &Ctx,
-    ) {
+    fn draw_aura(&self, buf: &mut Buffer, area: Rect, view: &HeadView, phase: f32, ctx: &Ctx) {
         if view.bloom < 0.10 {
             return;
         }
@@ -1185,14 +1165,7 @@ impl SpiderLily {
         }
     }
 
-    fn draw_petal(
-        &self,
-        buf: &mut Buffer,
-        area: Rect,
-        petal: &Petal,
-        view: &HeadView,
-        ctx: &Ctx,
-    ) {
+    fn draw_petal(&self, buf: &mut Buffer, area: Rect, petal: &Petal, view: &HeadView, ctx: &Ctx) {
         let len = petal.length * (0.10 + 0.90 * view.bloom);
         if len < 0.8 {
             return;
@@ -1237,7 +1210,10 @@ impl SpiderLily {
             } else {
                 lerp_color(view.pal.tip, view.pal.hot, (t - 0.74) / 0.26 * 0.75)
             };
-            let color = atmos(mul_color(tint(base, petal.hue_bias, 1.0), light), view.depth);
+            let color = atmos(
+                mul_color(tint(base, petal.hue_bias, 1.0), light),
+                view.depth,
+            );
 
             stamp_disc(buf, area, dx as f32, dy as f32, width, color);
 
@@ -1376,14 +1352,7 @@ impl SpiderLily {
     // ------------------------------------------------------------------
 
     /// Dew beads: they swell, throw a specular dot, then drain away.
-    fn draw_dew(
-        &self,
-        buf: &mut Buffer,
-        area: Rect,
-        flower: &Flower,
-        view: &HeadView,
-        ctx: &Ctx,
-    ) {
+    fn draw_dew(&self, buf: &mut Buffer, area: Rect, flower: &Flower, view: &HeadView, ctx: &Ctx) {
         // Dew on a distant flower is just noise: skip it below the threshold.
         if view.depth < 0.70 || view.bloom < 0.40 {
             return;
@@ -1393,8 +1362,8 @@ impl SpiderLily {
 
         for drop in &flower.dew {
             let u = (drop.timer / drop.cycle).fract();
-            let fill = smoothstep((u / 0.22).min(1.0))
-                * (1.0 - smoothstep(((u - 0.72) / 0.28).max(0.0)));
+            let fill =
+                smoothstep((u / 0.22).min(1.0)) * (1.0 - smoothstep(((u - 0.72) / 0.28).max(0.0)));
             if fill <= 0.02 {
                 continue;
             }
