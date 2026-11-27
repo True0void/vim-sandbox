@@ -44,4 +44,19 @@ impl Background {
     pub fn current_theme_name(&self) -> &'static str {
         self.registry.current_name()
     }
+
+    /// Change le thème actif par nom. Retourne `true` si appliqué.
+    pub fn set_theme(&mut self, name: &str) -> bool {
+        self.registry.set_theme(name)
+    }
+
+    /// Passe au thème suivant.
+    pub fn next_theme(&mut self) {
+        self.registry.next_theme();
+    }
+
+    /// Passe au thème précédent.
+    pub fn prev_theme(&mut self) {
+        self.registry.prev_theme();
+    }
 }

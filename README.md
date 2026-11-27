@@ -5,34 +5,27 @@ A minimalist Vim-like editor with artistic animated backgrounds. Written in Rust
 ## Features
 
 - **Vim-like editing** — Normal, Insert, Visual, Command modes with motions, operators, registers, undo/redo
-- **10 artistic themes** — Procedural ASCII animations running at 60fps in the background
+- **1 artistic theme** — `spider-lily` procedural animated background (9 more planned)
 - **True transparency** — Works with compositors (picom, hyprland, etc.) via OSC 11 sequences
 - **File operations** — `:e`, `:w`, `:q`, `:wq`, search `/`, tabs completion for themes
-- **Zero dependencies on emoji** — Pure ASCII/Unicode box-drawing characters
+- **Zero dependencies on emoji** — Pure ASCII/Unicode Braille characters
 
 ## Themes
 
 | Name | Description |
 |------|-------------|
-| `spider-lily` | 彼岸花 — Red spider lilies blooming/wilting, petals drifting (Tokyo Ghoul aesthetic) |
-| `sakura-night` | 夜桜 — Cherry blossoms at night under moonlight |
-| `abyssal-bloom` | 深海発光 — Bioluminescent deep-sea creatures |
-| `firefly-dusk` | 蛍の黄昏 — Fireflies dancing, grass swaying |
-| `aurora-void` | 極光の虚空 — Cosmic aurora curtains |
-| `koi-dreams` | 錦鯉の夢 — Koi fish, water lilies, ripples |
-| `bamboo-whisper` | 竹の囁き — Bamboo forest swaying |
-| `nebula-heart` | 星雲の心臓 — Pulsing nebula cores |
-| `rain-glass` | 雨のガラス — Rain drops on glass |
-| `willow-tears` | 垂柳の涙 — Weeping willow branches |
+| `spider-lily` | Red spider lilies blooming/wilting, petals drifting (Tokyo Ghoul aesthetic) |
+
+*9 other themes planned (`sakura-night`, `abyssal-bloom`, `firefly-dusk`, `aurora-void`, `koi-dreams`, `bamboo-whisper`, `nebula-heart`, `rain-glass`, `willow-tears`) — removed from the current branch, available in `git show HEAD~1:src/ui/themes.rs`.*
 
 ## Installation
 
 ```bash
 # Requires Rust 1.70+
-https://github.com/True0void/vim-sandbox
+git clone https://github.com/True0void/vim-sandbox
 cd vim-sandbox
 cargo build --release
-./target/release/vim-sandbox 
+./target/release/vim-sandbox
 ```
 
 ## Usage
@@ -52,25 +45,29 @@ vim-sandbox main.rs            # Open file
 | | `dd yy cc` `p P` | Delete/Yank/Change + Paste |
 | | `u` `Ctrl+r` | Undo / Redo |
 | | `v V` | Visual mode |
+| | `D Y C S` | Linewise delete/yank/change/substitute |
 | | `:` | Command mode |
+| | `Ctrl+q` | Quit |
+| | `Ctrl+s` | Save |
 | **Insert** | `Esc` | Return to Normal |
 | **Command** | `:w` `:w file` | Save / Save as |
 | | `:q` `:q!` | Quit / Force quit |
 | | `:wq` `:x` | Save and quit |
 | | `:e file` `:e! file` | Open / Reopen file |
 | | `/pattern` `?pattern` | Search forward/backward |
-| | `:theme name` | Change theme (Tab completion) |
+| | `n` `N` | Search next / previous |
+| | `:theme name` | Change theme |
 | | `:themes` | List all themes |
 | | `:themenext` `:themeprev` | Cycle themes |
+| | `:help` | Show help |
 
 ### Theme Commands
 
 ```vim
-:themes                      " List available themes
-:theme spider-lily           " Set theme
-:theme sak<tab>              " Tab completion → sakura-night
+:themes                      " List available themes (1 theme: spider-lily)
+:theme spider-lily           " Set theme (stored as status, no visual change yet)
 :colorscheme aurora-void     " Alias
-:themenext / :themeprev      " Next / Previous theme
+:themenext / :themeprev      " Next / Previous theme (no-op: single theme)
 ```
 
 ## Architecture
@@ -84,9 +81,8 @@ src/
 ├── ui/
 │   ├── background.rs       # Theme registry, animation loop
 │   ├── render.rs           # Ratatui rendering (transparent layers)
-│   ├── themes.rs           # 10 procedural ASCII themes
+│   ├── themes.rs           # 1 procedural ASCII theme (spider-lily)
 │   └── transparency.rs     # OSC 11 true transparency
-└── sandbox/                # Hot-reload infrastructure (unused)
 ```
 
 ## Transparency

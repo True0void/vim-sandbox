@@ -44,6 +44,22 @@ impl ThemeRegistry {
     pub fn resize_all(&mut self, area: Rect) {
         self.theme.resize(area);
     }
+
+    /// Change le thème actif par nom. Retourne `true` si le thème a été trouvé et appliqué.
+    pub fn set_theme(&mut self, name: &str) -> bool {
+        if self.theme.name() == name {
+            return true; // déjà actif
+        }
+        // Seul `spider-lily` existe actuellement ; les autres noms sont ignorés
+        // jusqu'à leur réintroduction. Retourne false pour signaler l'inconnu.
+        false
+    }
+
+    /// Passe au thème suivant (no-op avec un seul thème).
+    pub fn next_theme(&mut self) {}
+
+    /// Passe au thème précédent (no-op avec un seul thème).
+    pub fn prev_theme(&mut self) {}
 }
 
 // ============================================================================
@@ -964,7 +980,13 @@ impl SpiderLily {
             let (x, y) = petal_point(petal, view, t, len, self.time);
 
             // Thin at the base, full in the middle, pointed at the tip.
-            let profile = (std::f32::consts::PI * t).sin().powf(0.80);
+            // `sin(PI * 1.0)` is ~-8.7e-8 rather than 0 on f32, and a tiny
+            // negative base makes `powf(_, 0.80)` return NaN. Clamping the
+            // exponent input just below 1.0 keeps the base non-negative, so
+            // the NaN is removed at the source instead of being masked by
+            // the `.max(0.55)` below.
+            let t_profile = t.min(1.0 - f32::EPSILON);
+            let profile = (std::f32::consts::PI * t_profile).sin().powf(0.80);
             let width = (petal.width * (0.26 + 0.74 * profile)).max(0.55);
 
             let base_color = if t < 0.38 {
@@ -1027,6 +1049,10 @@ impl SpiderLily {
             let steps = (len * 4.0).clamp(6.0, 70.0) as usize;
             let mut previous: Option<(f32, f32)> = None;
 
+            // Hoist invariants: dim/bright depend only on view.depth/breath, not on i.
+            let dim = mul_color(C_STAMEN, view.depth * view.breath * 0.45);
+            let bright = mul_color(C_STAMEN, view.depth * view.breath * 0.85);
+
             for i in 0..=steps {
                 let t = i as f32 / steps as f32;
                 let angle = stamen.angle + view.rot + stamen.curl * (t * 1.15).sin()
@@ -1037,8 +1063,6 @@ impl SpiderLily {
                     - stamen.recurve * t.powi(3) * len * 0.16;
 
                 if let Some((px, py)) = previous {
-                    let dim = mul_color(C_STAMEN, view.depth * view.breath * 0.45);
-                    let bright = mul_color(C_STAMEN, view.depth * view.breath * 0.85);
                     let color = lerp_color(dim, bright, t);
                     draw_dot_line(
                         buf,

@@ -2,6 +2,12 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::{fs, path::PathBuf};
 
+/// Convertit un index de caractère en index d'octet pour une ligne donnée.
+/// Utilisé partout où `cursor.col` (index caractère) doit servir à slicer/insérer/supprimer dans un `String`.
+pub(crate) fn char_to_byte(line: &str, char_col: usize) -> usize {
+    line.char_indices().nth(char_col).map(|(i, _)| i).unwrap_or(line.len())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
@@ -92,15 +98,16 @@ impl Buffer {
 
     pub fn insert_char(&mut self, pos: Position, ch: char) {
         if let Some(line) = self.lines.get_mut(pos.row) {
-            let col = pos.col.min(line.len());
-            line.insert(col, ch);
+            let byte_col = char_to_byte(line, pos.col);
+            line.insert(byte_col, ch);
             self.modified = true;
         }
     }
 
     pub fn insert_newline(&mut self, pos: Position) {
         if let Some(line) = self.lines.get_mut(pos.row) {
-            let new_line = line.split_off(pos.col);
+            let byte_col = char_to_byte(line, pos.col);
+            let new_line = line.split_off(byte_col);
             self.lines.insert(pos.row + 1, new_line);
             self.modified = true;
         }
@@ -109,8 +116,10 @@ impl Buffer {
     pub fn delete_char(&mut self, pos: Position) -> bool {
         if pos.col > 0 {
             if let Some(line) = self.lines.get_mut(pos.row) {
-                if pos.col <= line.len() {
-                    line.remove(pos.col - 1);
+                let char_count = line.chars().count();
+                if pos.col <= char_count {
+                    let byte_prev = char_to_byte(line, pos.col - 1);
+                    line.remove(byte_prev);
                     self.modified = true;
                     return true;
                 }
@@ -184,6 +193,9 @@ pub struct Editor {
     command_buffer: String,
     last_search: Option<String>,
     quit_times: u8,
+    // Explicit quit request, independent from the status line so that any
+    // status message cannot cancel a pending `:q`.
+    should_quit: bool,
     // For gg detection
     last_key: Option<KeyCode>,
     // Registers
@@ -216,6 +228,7 @@ impl Editor {
             command_buffer: String::new(),
             last_search: None,
             quit_times: 0,
+            should_quit: false,
             last_key: None,
             unnamed_register: Register::default(),
             numbered_registers: std::array::from_fn(|_| Register::default()),
@@ -270,6 +283,20 @@ impl Editor {
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_msg = msg.into();
+    }
+
+    /// Ask the application loop to exit cleanly.
+    ///
+    /// Uses a dedicated flag rather than a magic status message, so nothing
+    /// (`set_status`, a redraw, another command) can swallow the request.
+    pub fn request_quit(&mut self) {
+        self.should_quit = true;
+    }
+
+    /// Whether a quit was requested; polled by the event loop after every key
+    /// and every tick.
+    pub fn should_quit(&self) -> bool {
+        self.should_quit
     }
 
     pub fn clear_command_buffer(&mut self) {
@@ -434,9 +461,8 @@ impl Editor {
             }
             KeyCode::Backspace => {
                 if self.cursor.col > 0 {
-                    self.move_cursor(-1, 0);
-                    if let Some(ch) = self.buffer.line(self.cursor.row).and_then(|l| l.chars().nth(self.cursor.col)) {
-                        self.push_undo(UndoEntry::DeleteChar { row: self.cursor.row, col: self.cursor.col, ch });
+                    if let Some(ch) = self.buffer.line(self.cursor.row).and_then(|l| l.chars().nth(self.cursor.col - 1)) {
+                        self.push_undo(UndoEntry::DeleteChar { row: self.cursor.row, col: self.cursor.col - 1, ch });
                     }
                     self.buffer.delete_char(self.cursor);
                 } else if self.cursor.row > 0 {
@@ -552,11 +578,11 @@ impl Editor {
                     self.set_status("No write since last change (use :q! to force)");
                     self.quit_times = 1;
                 } else {
-                    self.set_status("QUIT_REQUESTED");
+                    self.request_quit();
                 }
             }
             "q!" | "quit!" => {
-                self.set_status("QUIT_REQUESTED");
+                self.request_quit();
             }
             "w" | "write" => {
                 if args.is_empty() {
@@ -568,12 +594,12 @@ impl Editor {
             "wq" | "x" => {
                 self.save()?;
                 if !self.buffer.is_modified() {
-                    self.set_status("QUIT_REQUESTED");
+                    self.request_quit();
                 }
             }
             "wq!" | "x!" => {
                 self.save()?;
-                self.set_status("QUIT_REQUESTED");
+                self.request_quit();
             }
             "e" | "edit" => {
                 if args.is_empty() {
@@ -700,7 +726,10 @@ impl Editor {
         match entry {
             UndoEntry::InsertChar { row, col, .. } => {
                 if let Some(line) = self.buffer.line_mut(row) {
-                    if col < line.len() { line.remove(col); }
+                    let byte_col = char_to_byte(line, col);
+                    if byte_col <= line.len() {
+                        line.remove(byte_col);
+                    }
                 }
             }
             UndoEntry::InsertNewline { row, col } => {
@@ -713,7 +742,10 @@ impl Editor {
             }
             UndoEntry::DeleteChar { row, col, ch } => {
                 if let Some(line) = self.buffer.line_mut(row) {
-                    if col <= line.len() { line.insert(col, ch); }
+                    let byte_col = char_to_byte(line, col);
+                    if byte_col <= line.len() {
+                        line.insert(byte_col, ch);
+                    }
                 }
             }
             UndoEntry::DeleteLine { row, line } => {
@@ -740,7 +772,10 @@ impl Editor {
         match entry {
             UndoEntry::InsertChar { row, col, ch } => {
                 if let Some(line) = self.buffer.line_mut(row) {
-                    if col <= line.len() { line.insert(col, ch); }
+                    let byte_col = char_to_byte(line, col);
+                    if byte_col <= line.len() {
+                        line.insert(byte_col, ch);
+                    }
                 }
             }
             UndoEntry::InsertNewline { row, col } => {
@@ -751,7 +786,10 @@ impl Editor {
             }
             UndoEntry::DeleteChar { row, col, .. } => {
                 if let Some(line) = self.buffer.line_mut(row) {
-                    if col < line.len() { line.remove(col); }
+                    let byte_col = char_to_byte(line, col);
+                    if byte_col < line.len() {
+                        line.remove(byte_col);
+                    }
                 }
             }
             UndoEntry::DeleteLine { row, .. } => {
@@ -846,9 +884,10 @@ impl Editor {
         } else {
             // Insert after cursor
             if let Some(line) = self.buffer.line_mut(self.cursor.row) {
-                let insert_pos = (self.cursor.col + 1).min(line.len());
-                line.insert_str(insert_pos, &content);
-                self.cursor.col = insert_pos + content.chars().count();
+                let char_insert_pos = (self.cursor.col + 1).min(line.chars().count());
+                let byte_insert_pos = char_to_byte(line, char_insert_pos);
+                line.insert_str(byte_insert_pos, &content);
+                self.cursor.col = char_insert_pos + content.chars().count();
             }
         }
         self.buffer.modified = true;
@@ -868,8 +907,9 @@ impl Editor {
         } else {
             // Insert before cursor
             if let Some(line) = self.buffer.line_mut(self.cursor.row) {
-                let insert_pos = self.cursor.col.min(line.len());
-                line.insert_str(insert_pos, &content);
+                let insert_pos = self.cursor.col.min(line.chars().count());
+                let byte_insert_pos = char_to_byte(line, insert_pos);
+                line.insert_str(byte_insert_pos, &content);
             }
         }
         self.buffer.modified = true;
@@ -894,6 +934,7 @@ impl Editor {
             command_buffer: String::new(),
             last_search: None,
             quit_times: 0,
+            should_quit: false,
             last_key: None,
             unnamed_register: Register::default(),
             numbered_registers: std::array::from_fn(|_| Register::default()),
@@ -917,6 +958,12 @@ impl Editor {
                 KeyCode::Char('k') | KeyCode::Up => temp_editor.move_cursor(0, -1),
                 KeyCode::Char('G') => temp_editor.cursor.row = temp_editor.buffer.len().saturating_sub(1),
                 KeyCode::Char('g') => temp_editor.cursor.row = 0,
+                // Opérateur doublé (dd, yy, cc) → linewise sur `count` lignes
+                KeyCode::Char(m) if matches!((op, m), (Operator::Delete, 'd') | (Operator::Yank, 'y') | (Operator::Change, 'c')) => {
+                    let target_row = (temp_editor.cursor.row + count.saturating_sub(1)).min(temp_editor.buffer.len().saturating_sub(1));
+                    temp_editor.cursor.row = target_row;
+                    temp_editor.cursor.col = 0;
+                }
                 _ => {}
             }
         }
@@ -929,21 +976,35 @@ impl Editor {
             (end_pos.row, end_pos.col, start_row, start_col)
         };
 
+        // Opérateur doublé (dd, yy, cc) sur une seule ligne → forcer linewise
+        let doubled_linewise = matches!((op, motion), (Operator::Delete, KeyCode::Char('d')) | (Operator::Yank, KeyCode::Char('y')) | (Operator::Change, KeyCode::Char('c')));
+
         match op {
             Operator::Delete => {
                 let mut deleted = String::new();
                 let linewise = start_col == 0 && end_col == 0 && end_row > start_row;
+                let effective_linewise = linewise || (doubled_linewise && start_row == end_row);
                 
                 if start_row == end_row {
-                    // Single line
-                    if let Some(line) = self.buffer.line_mut(start_row) {
-                        deleted = line[start_col..end_col.min(line.len())].to_string();
-                        line.drain(start_col..end_col.min(line.len()));
+                    if effective_linewise {
+                        // dd : supprimer la ligne entière
+                        if let Some(line) = self.buffer.line_mut(start_row) {
+                            deleted = std::mem::take(line);
+                        }
+                    } else {
+                        // Single line char-wise
+                        if let Some(line) = self.buffer.line_mut(start_row) {
+                            let sc = char_to_byte(line, start_col);
+                            let ec = char_to_byte(line, end_col).min(line.len());
+                            deleted = line[sc..ec].to_string();
+                            line.drain(sc..ec);
+                        }
                     }
                 } else {
                     // Multi-line
                     if let Some(first) = self.buffer.line_mut(start_row) {
-                        deleted.push_str(&first[start_col..]);
+                        let sc = char_to_byte(first, start_col);
+                        deleted.push_str(&first[sc..]);
                         deleted.push('\n');
                     }
                     for row in (start_row + 1)..end_row {
@@ -953,7 +1014,8 @@ impl Editor {
                         }
                     }
                     if let Some(last) = self.buffer.line_mut(end_row) {
-                        deleted.push_str(&last[..end_col.min(last.len())]);
+                        let ec = char_to_byte(last, end_col).min(last.len());
+                        deleted.push_str(&last[..ec]);
                     }
                     // Remove lines
                     for _ in start_row..=end_row {
@@ -965,7 +1027,8 @@ impl Editor {
                         remaining.push_str(&first[..start_col]);
                     }
                     if let Some(last) = self.buffer.line(start_row) { // After removal, end_row shifted
-                        remaining.push_str(&last[end_col.min(last.len())..]);
+                        let ec = char_to_byte(last, end_col).min(last.len());
+                        remaining.push_str(&last[ec..]);
                     }
                     self.buffer.lines.insert(start_row, remaining);
                 }
@@ -976,14 +1039,25 @@ impl Editor {
             Operator::Yank => {
                 let mut yanked = String::new();
                 let linewise = start_col == 0 && end_col == 0 && end_row > start_row;
+                let effective_linewise = linewise || (doubled_linewise && start_row == end_row);
                 
                 if start_row == end_row {
-                    if let Some(line) = self.buffer.line(start_row) {
-                        yanked = line[start_col..end_col.min(line.len())].to_string();
+                    if effective_linewise {
+                        // yy : yanker la ligne entière
+                        if let Some(line) = self.buffer.line(start_row) {
+                        yanked = line.to_string();
+                        }
+                    } else {
+                        if let Some(line) = self.buffer.line(start_row) {
+                            let sc = char_to_byte(line, start_col);
+                            let ec = char_to_byte(line, end_col).min(line.len());
+                            yanked = line[sc..ec].to_string();
+                        }
                     }
                 } else {
                     if let Some(first) = self.buffer.line(start_row) {
-                        yanked.push_str(&first[start_col..]);
+                        let sc = char_to_byte(first, start_col);
+                        yanked.push_str(&first[sc..]);
                         yanked.push('\n');
                     }
                     for row in (start_row + 1)..end_row {
@@ -993,16 +1067,26 @@ impl Editor {
                         }
                     }
                     if let Some(last) = self.buffer.line(end_row) {
-                        yanked.push_str(&last[..end_col.min(last.len())]);
+                        let ec = char_to_byte(last, end_col).min(last.len());
+                        yanked.push_str(&last[..ec]);
                     }
                 }
-                self.yank_to_register(yanked, linewise, None);
-                self.set_status(format!("Yanked {} line{}", if linewise { "line" } else { "char" }, if count > 1 { "s" } else { "" }));
+                self.yank_to_register(yanked, effective_linewise, None);
+                self.set_status(format!("Yanked {} line{}", if effective_linewise { "line" } else { "char" }, if count > 1 { "s" } else { "" }));
             }
             Operator::Change => {
-                // Delete then enter insert
-                self.apply_operator(Operator::Delete, motion, count)?;
-                self.enter_insert();
+                if doubled_linewise {
+                    // cc : supprimer la ligne entière et entrer en mode insert
+                    if let Some(line) = self.buffer.line_mut(start_row) {
+                        let deleted = std::mem::take(line);
+                        self.yank_to_register(deleted, true, None);
+                    }
+                    self.enter_insert();
+                } else {
+                    // Change char-wise : delete then enter insert
+                    self.apply_operator(Operator::Delete, motion, count)?;
+                    self.enter_insert();
+                }
             }
         }
         self.clamp_cursor();
@@ -1022,8 +1106,9 @@ impl Editor {
 
     fn delete_to_line_end(&mut self) {
         if let Some(line) = self.buffer.line_mut(self.cursor.row) {
-            let deleted = line[self.cursor.col..].to_string();
-            line.truncate(self.cursor.col);
+            let byte_col = char_to_byte(line, self.cursor.col);
+            let deleted = line[byte_col..].to_string();
+            line.truncate(byte_col);
             self.buffer.modified = true;
             self.yank_to_register(deleted, false, None);
         }
@@ -1120,7 +1205,7 @@ impl Editor {
 
     fn move_to_line_end(&mut self) {
         if let Some(line) = self.buffer.line(self.cursor.row) {
-            self.cursor.col = line.len().saturating_sub(1);
+            self.cursor.col = line.chars().count().saturating_sub(1);
         }
     }
 
@@ -1149,9 +1234,10 @@ impl Editor {
                     let row = (start_row + offset) % len;
                     let line = &lines[row];
                     let search_start = if row == start_row { start_col + 1 } else { 0 };
-                    if let Some(pos) = line[search_start..].find(&pattern) {
+                    let byte_start = char_to_byte(line, search_start);
+                    if let Some(byte_pos) = line[byte_start..].find(&pattern) {
                         self.cursor.row = row;
-                        self.cursor.col = search_start + pos;
+                        self.cursor.col = search_start + line[byte_start..byte_start + byte_pos].chars().count();
                         self.ensure_cursor_visible();
                         return Ok(());
                     }
@@ -1162,9 +1248,10 @@ impl Editor {
                     let row = if start_row >= offset { start_row - offset } else { len - (offset - start_row) };
                     let line = &lines[row];
                     let search_end = if row == start_row { start_col } else { line.len() };
-                    if let Some(pos) = line[..search_end].rfind(&pattern) {
+                    let byte_end = char_to_byte(line, search_end);
+                    if let Some(pos) = line[..byte_end].rfind(&pattern) {
                         self.cursor.row = row;
-                        self.cursor.col = pos;
+                        self.cursor.col = line[..pos].chars().count();
                         self.ensure_cursor_visible();
                         return Ok(());
                     }

@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::editor::core::{Editor, Mode};
+use crate::editor::core::{Editor, Mode, char_to_byte};
 use crate::ui::background::Background;
 
 pub fn render_ui(f: &mut Frame, editor: &Editor, background: &mut Background) {
@@ -62,9 +62,10 @@ fn render_editor_area(f: &mut Frame, editor: &Editor, area: Rect) {
 
         // Line content with cursor highlight
         if row == cursor.row && mode == Mode::Normal {
-            let before = &line_content[..cursor.col.min(line_content.len())];
+            let byte_col = char_to_byte(line_content, cursor.col);
+            let before = &line_content[..byte_col.min(line_content.len())];
             let at = line_content.chars().nth(cursor.col).unwrap_or(' ');
-            let after = &line_content[cursor.col.min(line_content.len())..];
+            let after = &line_content[byte_col.min(line_content.len())..];
 
             spans.push(Span::styled(before, Style::default().fg(Color::White)));
             spans.push(Span::styled(
@@ -73,8 +74,9 @@ fn render_editor_area(f: &mut Frame, editor: &Editor, area: Rect) {
             ));
             spans.push(Span::styled(after, Style::default().fg(Color::White)));
         } else if row == cursor.row && mode == Mode::Insert {
-            let before = &line_content[..cursor.col.min(line_content.len())];
-            let after = &line_content[cursor.col.min(line_content.len())..];
+            let byte_col = char_to_byte(line_content, cursor.col);
+            let before = &line_content[..byte_col.min(line_content.len())];
+            let after = &line_content[byte_col.min(line_content.len())..];
             spans.push(Span::styled(before, Style::default().fg(Color::White)));
             spans.push(Span::styled(
                 " ",
@@ -105,7 +107,6 @@ fn render_status_line(f: &mut Frame, editor: &Editor, area: Rect) {
     let mode = editor.mode();
     let cursor = editor.cursor();
     let buffer = editor.buffer();
-    let status = editor.status_msg();
 
     let mode_str = match mode {
         Mode::Normal => "NORMAL",
@@ -164,6 +165,8 @@ fn render_command_line(f: &mut Frame, editor: &Editor, area: Rect) {
     let status = editor.status_msg();
     let cmd_buffer = editor.command_buffer();
 
+    // Quitting is driven by `Editor::should_quit`, never by a magic status
+    // string, so any status message can be displayed verbatim.
     if mode == Mode::Command {
         // Show the command being typed
         let cmd = Line::from(vec![
@@ -172,7 +175,7 @@ fn render_command_line(f: &mut Frame, editor: &Editor, area: Rect) {
         ]);
         let para = Paragraph::new(cmd).style(Style::default().bg(Color::Black));
         f.render_widget(para, area);
-    } else if !status.is_empty() && status != "QUIT_REQUESTED" {
+    } else if !status.is_empty() {
         let msg = Line::from(vec![
             Span::styled(&*status, Style::default().fg(Color::Cyan).add_modifier(Modifier::ITALIC)),
         ]);
