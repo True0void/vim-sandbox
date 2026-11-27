@@ -1,3 +1,9 @@
+<img width="2560" height="1391" alt="image" src="https://github.com/user-attachments/assets/f8ea383d-9f23-4876-a57e-6acd8b73ecdb" />
+<img width="1543" height="984" alt="image" src="https://github.com/user-attachments/assets/45e11f10-3a1f-4dbd-be00-549effcc1641" />
+
+<img width="1106" height="743" alt="image" src="https://github.com/user-attachments/assets/11a6c1eb-1417-4b39-a949-38f12f8bdc18" />
+
+
 # vim-sandbox
 
 A minimalist Vim-like editor with artistic animated backgrounds. Written in Rust with ratatui.
