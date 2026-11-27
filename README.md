@@ -11,18 +11,46 @@ A minimalist Vim-like editor with artistic animated backgrounds. Written in Rust
 ## Features
 
 - **Vim-like editing** — Normal, Insert, Visual, Command modes with motions, operators, registers, undo/redo
-- **1 artistic theme** — `spider-lily` procedural animated background (9 more planned)
+- **10 animated themes** — Procedural braille-art backgrounds running at 60fps
 - **True transparency** — Works with compositors (picom, hyprland, etc.) via OSC 11 sequences
 - **File operations** — `:e`, `:w`, `:q`, `:wq`, search `/`, tabs completion for themes
 - **Zero dependencies on emoji** — Pure ASCII/Unicode Braille characters
+
+## Demo
+
+Watch the themes in action:
+
+| Theme | Preview |
+|-------|---------|
+| spider-lily | ![spider-lily](./docs/screenshots/spider-lily.gif) |
+| sakura-night | ![sakura-night](./docs/screenshots/sakura-night.gif) |
+| abyssal-bloom | ![abyssal-bloom](./docs/screenshots/abyssal-bloom.gif) |
+| firefly-dusk | ![firefly-dusk](./docs/screenshots/firefly-dusk.gif) |
+| aurora-void | ![aurora-void](./docs/screenshots/aurora-void.gif) |
+| koi-dreams | ![koi-dreams](./docs/screenshots/koi-dreams.gif) |
+| bamboo-whisper | ![bamboo-whisper](./docs/screenshots/bamboo-whisper.gif) |
+| nebula-heart | ![nebula-heart](./docs/screenshots/nebula-heart.gif) |
+| rain-glass | ![rain-glass](./docs/screenshots/rain-glass.gif) |
+| willow-tears | ![willow-tears](./docs/screenshots/willow-tears.gif) |
+
+*Generate screenshots with `asciinema rec cast.cast && cargo run --release`, then convert with `asciinema2gif`. Place GIFs in `docs/screenshots/`.*
 
 ## Themes
 
 | Name | Description |
 |------|-------------|
-| `spider-lily` | Red spider lilies blooming/wilting, petals drifting (Tokyo Ghoul aesthetic) |
+| `spider-lily` | 彼岸花 — Red spider lilies blooming/wilting, petals drifting (Tokyo Ghoul aesthetic) |
+| `sakura-night` | 夜桜 — Cherry blossoms drifting under a moonlight sky |
+| `abyssal-bloom` | 深海発光 — Bioluminescent deep-sea creatures glowing in the dark |
+| `firefly-dusk` | 蛍の黄昏 — Fireflies dancing, grass swaying at dusk |
+| `aurora-void` | 極光の虚空 — Cosmic aurora curtains pulsing in deep space |
+| `koi-dreams` | 錦鯉の夢 — Koi fish, water lilies, ripples in a moonlit pond |
+| `bamboo-whisper` | 竹の囁き — Bamboo forest swaying in the breeze |
+| `nebula-heart` | 星雲の心臓 — Pulsing nebula cores in deep space |
+| `rain-glass` | 雨のガラス — Raindrops on glass with city lights behind |
+| `willow-tears` | 垂柳の涙 — Weeping willow branches with falling droplets |
 
-*9 other themes planned (`sakura-night`, `abyssal-bloom`, `firefly-dusk`, `aurora-void`, `koi-dreams`, `bamboo-whisper`, `nebula-heart`, `rain-glass`, `willow-tears`) — removed from the current branch, available in `git show HEAD~1:src/ui/themes.rs`.*
+Switch themes at runtime: `:theme sakura-night`, `:themenext`, `:themeprev`, `:themes`.
 
 ## Installation
 
@@ -70,10 +98,11 @@ vim-sandbox main.rs            # Open file
 ### Theme Commands
 
 ```vim
-:themes                      " List available themes (1 theme: spider-lily)
-:theme spider-lily           " Set theme (stored as status, no visual change yet)
+:themes                      " List available themes
+:theme spider-lily           " Set theme
+:theme sak<tab>              " Tab completion → sakura-night
 :colorscheme aurora-void     " Alias
-:themenext / :themeprev      " Next / Previous theme (no-op: single theme)
+:themenext / :themeprev      " Next / Previous theme
 ```
 
 ## Architecture
@@ -87,7 +116,18 @@ src/
 ├── ui/
 │   ├── background.rs       # Theme registry, animation loop
 │   ├── render.rs           # Ratatui rendering (transparent layers)
-│   ├── themes.rs           # 1 procedural ASCII theme (spider-lily)
+│   ├── themes/
+│   │   ├── mod.rs          # Theme trait + registry (10 themes)
+│   │   ├── spider_lily.rs  # Red spider lilies garden
+│   │   ├── sakura_night.rs # Cherry blossoms under moonlight
+│   │   ├── abyssal_bloom.rs# Bioluminescent deep-sea creatures
+│   │   ├── firefly_dusk.rs # Fireflies at dusk
+│   │   ├── aurora_void.rs  # Cosmic aurora curtains
+│   │   ├── koi_dreams.rs   # Koi fish in moonlit pond
+│   │   ├── bamboo_whisper.rs# Bamboo forest in breeze
+│   │   ├── nebula_heart.rs # Pulsing nebula cores
+│   │   ├── rain_glass.rs   # Raindrops on glass
+│   │   └── willow_tears.rs # Weeping willow with tears
 │   └── transparency.rs     # OSC 11 true transparency
 ```
 
