@@ -14,7 +14,7 @@ Watch the themes in action:
 ## Features
 
 - **Vim-like editing** — Normal, Insert, Visual, Command modes with motions, operators, registers, undo/redo
-- **10 animated themes** — Procedural braille-art backgrounds running at 60fps
+- **8 animated themes** — Procedural braille-art backgrounds running at 60fps
 - **True transparency** — Works with compositors (picom, hyprland, etc.) via OSC 11 sequences
 - **File operations** — `:e`, `:w`, `:q`, `:wq`, search `/`, tabs completion for themes
 - **Zero dependencies on emoji** — Pure ASCII/Unicode Braille characters
@@ -26,13 +26,9 @@ Watch the themes in action:
 | `spider-lily` | 彼岸花 — Red spider lilies blooming/wilting, petals drifting (Tokyo Ghoul aesthetic) |
 | `sakura-night` | 夜桜 — Cherry blossoms drifting under a moonlight sky |
 | `abyssal-bloom` | 深海発光 — Bioluminescent deep-sea creatures glowing in the dark |
-| `firefly-dusk` | 蛍の黄昏 — Fireflies dancing, grass swaying at dusk |
 | `aurora-void` | 極光の虚空 — Cosmic aurora curtains pulsing in deep space |
 | `koi-dreams` | 錦鯉の夢 — Koi fish, water lilies, ripples in a moonlit pond |
-| `bamboo-whisper` | 竹の囁き — Bamboo forest swaying in the breeze |
 | `nebula-heart` | 星雲の心臓 — Pulsing nebula cores in deep space |
-| `rain-glass` | 雨のガラス — Raindrops on glass with city lights behind |
-| `willow-tears` | 垂柳の涙 — Weeping willow branches with falling droplets |
 
 Switch themes at runtime: `:theme sakura-night`, `:themenext`, `:themeprev`, `:themes`.
 
@@ -134,3 +130,19 @@ MIT
 ## Author
 
 **chef** — [GitHub](https://github.com/chef)
+
+## Models
+
+Themes and improvements were generated with the help of several AI sub-agents:
+
+- **nvidia/nemotron-3.5-super-vl-120b-a12b** — session orchestrator, theme architecture, README, editor fixes
+- **nvidia/nemotron-3-ultra-550b-a55b** — spider-lily enhancement (palettes, wind, dew, glints, performance)
+- **google/gemma-3-12b-it** — firefly-dusk enhancement (trails, sparkle, grass, crepuscular sky, queen fireflies)
+- **mistralai/mistral-large-4-1t-a52b** — aurora-void enhancement (7 curtains, 110 stars, light trails)
+- **deepseek-v4.1-flash-1017-economy** — terminal safety (guard, quit flag, signals, OSC 111 teardown)
+- **qwen3.8-flash** — aurora-void enhancement
+- **qwen3.8-27b** — firefly-dusk enhancement
+- **claude-fable-5 / claude-fable-5-1** — agent support
+- **agnes-2.5-flash / agnes-2.5-pro** — agent support
+
+Build: `cargo build --release` — 0 errors.
