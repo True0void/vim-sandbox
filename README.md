@@ -142,6 +142,4 @@ Themes and improvements were generated with the help of several AI sub-agents:
 - **deepseek-v4.1-flash-1017-economy** — terminal safety (guard, quit flag, signals, OSC 111 teardown)
 - **qwen3.8-flash** — aurora-void enhancement
 - **qwen3.8-27b** — firefly-dusk enhancement
-- **claude-fable-5 / claude-fable-5-1** — agent support
-- **agnes-2.5-flash / agnes-2.5-pro** — agent support
 
