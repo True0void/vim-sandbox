@@ -9,8 +9,8 @@ Watch the themes in action:
 | Theme | Preview |
 |-------|---------|
 | spider-lily | ![spider-lily](https://github.com/user-attachments/assets/f8ea383d-9f23-4876-a57e-6acd8b73ecdb) |
-| sakura-night | ![sakura-night](https://github.com/user-attachments/assets/45e11f10-3a1f-4dbd-be00-549effcc1641) |
-| abyssal-bloom | ![abyssal-bloom](https://github.com/user-attachments/assets/11a6c1eb-1417-4b39-a949-38f12f8bdc18) |
+| spider-lily   ![sakura-night](https://github.com/user-attachments/assets/45e11f10-3a1f-4dbd-be00-549effcc1641) |
+| spider-lily   | ![abyssal-bloom](https://github.com/user-attachments/assets/11a6c1eb-1417-4b39-a949-38f12f8bdc18) |
 
 *Generate your own screenshots: `asciinema rec cast.cast && cargo run --release`, then convert with `asciinema2gif`. Place GIFs in `docs/screenshots/` and link them above.*
 
