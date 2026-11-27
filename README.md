@@ -145,4 +145,3 @@ Themes and improvements were generated with the help of several AI sub-agents:
 - **claude-fable-5 / claude-fable-5-1** — agent support
 - **agnes-2.5-flash / agnes-2.5-pro** — agent support
 
-Build: `cargo build --release` — 0 errors.
