@@ -42,8 +42,6 @@ impl ThemeRegistry {
                 Box::new(crate::ui::themes::koi_dreams::KoiDreams::new()),
                 Box::new(crate::ui::themes::bamboo_whisper::BambooWhisper::new()),
                 Box::new(crate::ui::themes::nebula_heart::NebulaHeart::new()),
-                Box::new(crate::ui::themes::rain_glass::RainGlass::new()),
-                Box::new(crate::ui::themes::willow_tears::WillowTears::new()),
             ],
             current: 0,
         }
@@ -342,5 +340,3 @@ pub mod aurora_void;
 pub mod koi_dreams;
 pub mod bamboo_whisper;
 pub mod nebula_heart;
-pub mod rain_glass;
-pub mod willow_tears;
