@@ -1,12 +1,18 @@
-<img width="2560" height="1391" alt="image" src="https://github.com/user-attachments/assets/f8ea383d-9f23-4876-a57e-6acd8b73ecdb" />
-<img width="1543" height="984" alt="image" src="https://github.com/user-attachments/assets/45e11f10-3a1f-4dbd-be00-549effcc1641" />
-
-<img width="1106" height="743" alt="image" src="https://github.com/user-attachments/assets/11a6c1eb-1417-4b39-a949-38f12f8bdc18" />
-
-
 # vim-sandbox
 
 A minimalist Vim-like editor with artistic animated backgrounds. Written in Rust with ratatui.
+
+## Demo
+
+Watch the themes in action:
+
+| Theme | Preview |
+|-------|---------|
+| spider-lily | ![spider-lily](https://github.com/user-attachments/assets/f8ea383d-9f23-4876-a57e-6acd8b73ecdb) |
+| sakura-night | ![sakura-night](https://github.com/user-attachments/assets/45e11f10-3a1f-4dbd-be00-549effcc1641) |
+| abyssal-bloom | ![abyssal-bloom](https://github.com/user-attachments/assets/11a6c1eb-1417-4b39-a949-38f12f8bdc18) |
+
+*Generate your own screenshots: `asciinema rec cast.cast && cargo run --release`, then convert with `asciinema2gif`. Place GIFs in `docs/screenshots/` and link them above.*
 
 ## Features
 
@@ -15,25 +21,6 @@ A minimalist Vim-like editor with artistic animated backgrounds. Written in Rust
 - **True transparency** — Works with compositors (picom, hyprland, etc.) via OSC 11 sequences
 - **File operations** — `:e`, `:w`, `:q`, `:wq`, search `/`, tabs completion for themes
 - **Zero dependencies on emoji** — Pure ASCII/Unicode Braille characters
-
-## Demo
-
-Watch the themes in action:
-
-| Theme | Preview |
-|-------|---------|
-| spider-lily | ![spider-lily](./docs/screenshots/spider-lily.gif) |
-| sakura-night | ![sakura-night](./docs/screenshots/sakura-night.gif) |
-| abyssal-bloom | ![abyssal-bloom](./docs/screenshots/abyssal-bloom.gif) |
-| firefly-dusk | ![firefly-dusk](./docs/screenshots/firefly-dusk.gif) |
-| aurora-void | ![aurora-void](./docs/screenshots/aurora-void.gif) |
-| koi-dreams | ![koi-dreams](./docs/screenshots/koi-dreams.gif) |
-| bamboo-whisper | ![bamboo-whisper](./docs/screenshots/bamboo-whisper.gif) |
-| nebula-heart | ![nebula-heart](./docs/screenshots/nebula-heart.gif) |
-| rain-glass | ![rain-glass](./docs/screenshots/rain-glass.gif) |
-| willow-tears | ![willow-tears](./docs/screenshots/willow-tears.gif) |
-
-*Generate screenshots with `asciinema rec cast.cast && cargo run --release`, then convert with `asciinema2gif`. Place GIFs in `docs/screenshots/`.*
 
 ## Themes
 
